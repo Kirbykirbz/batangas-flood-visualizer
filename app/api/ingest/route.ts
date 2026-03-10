@@ -10,8 +10,15 @@ export const dynamic = "force-dynamic";
 const supabase = (() => {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
   if (!url || !key) return null;
-  return createClient(url, key, { auth: { persistSession: false } });
+
+  return createClient(url, key, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
 })();
 
 function bad(msg: string, status = 400) {
@@ -31,6 +38,8 @@ function bool(v: unknown): boolean {
 }
 
 export async function POST(req: Request) {
+  if (!supabase) return bad("Server missing Supabase configuration", 500);
+
   const secret = process.env.INGEST_SECRET;
   if (!secret) return bad("Server missing INGEST_SECRET", 500);
 
@@ -54,7 +63,7 @@ export async function POST(req: Request) {
 
   // Flags
   const usValidIn = bool(body.usValid);
-  const acceptedForStable = bool(body.acceptedForStable);
+  const acceptedForStableIn = bool(body.acceptedForStable);
   const overflow = bool(body.overflow);
 
   // Rain
@@ -64,39 +73,42 @@ export async function POST(req: Request) {
   const rainRateMmHr60 = num(body.rainRateMmHr60);
   const rainRateMmHr300 = num(body.rainRateMmHr300);
 
-  // WiFi
+  // Signal / connectivity
   const rssiDbm = num(body.rssiDbm);
 
   if (!Number.isFinite(ts)) return bad("ts invalid");
 
-  // IMPORTANT:
-  // rawDist can be -1 when invalid (ESP sends -1). That's finite but not usable.
+  // ESP may send -1 when ultrasonic is invalid
   const rawDistOk = Number.isFinite(rawDistCm) && rawDistCm > 0;
 
-  // If ESP says invalid, trust it. Also force invalid if rawDist is not usable.
+  // Trust ESP validity, but force invalid if distance itself is unusable
   const usValid = usValidIn && rawDistOk;
+  const acceptedForStable = usValid ? acceptedForStableIn : false;
 
-  // Dry-distance calibration
+  // Server-side calibration
   const dryDistanceCm = Number(process.env.DRY_DISTANCE_CM);
   const dryOk = Number.isFinite(dryDistanceCm);
 
-  // Compute flood depth ONLY when ultrasonic is valid and dry calibration exists
+  // Only compute flood depth when ultrasonic is valid
   const floodDepthCm =
     dryOk && usValid ? Math.max(0, dryDistanceCm - rawDistCm) : null;
 
-  // Build SensorPoint
-  const p: SensorPoint = {
+  const point: SensorPoint = {
     ts,
     deviceId,
 
-    // Keep rawDist as the device sent for debugging, even if invalid
+    // keep raw distance for debugging, even if invalid
     rawDistCm: rawDistOk ? rawDistCm : -1,
 
-    rawWaterCm: Number.isFinite(rawWaterCm) && rawWaterCm >= 0 ? rawWaterCm : null,
-    stableWaterCm: Number.isFinite(stableWaterCm) && stableWaterCm >= 0 ? stableWaterCm : null,
+    rawWaterCm:
+      Number.isFinite(rawWaterCm) && rawWaterCm >= 0 ? rawWaterCm : null,
+    stableWaterCm:
+      Number.isFinite(stableWaterCm) && stableWaterCm >= 0
+        ? stableWaterCm
+        : null,
 
     usValid,
-    acceptedForStable: usValid ? acceptedForStable : false,
+    acceptedForStable,
     overflow,
 
     rainTicksTotal: Number.isFinite(rainTicksTotal) ? rainTicksTotal : null,
@@ -108,40 +120,47 @@ export async function POST(req: Request) {
     rssiDbm: Number.isFinite(rssiDbm) ? rssiDbm : null,
 
     dryDistanceCm: dryOk ? dryDistanceCm : null,
-    floodDepthCm, // already null-safe
+    floodDepthCm,
   };
 
-  await appendPoint(p);
+  // Keep for local convenience only; do not rely on this in production reads
+  await appendPoint(point);
 
-  // Optional: persist to Supabase
-  if (supabase) {
-    const tsIso = new Date(ts).toISOString();
+  const tsIso = new Date(ts).toISOString();
 
-    const { error } = await supabase.from("sensor_readings").insert({
-      device_id: deviceId,
-      ts: tsIso,
+  const { error } = await supabase.from("sensor_readings").insert({
+    device_id: deviceId,
+    ts: tsIso,
 
-      raw_dist_cm: rawDistOk ? rawDistCm : null,
-      raw_water_cm: Number.isFinite(rawWaterCm) && rawWaterCm >= 0 ? rawWaterCm : null,
-      stable_water_cm: Number.isFinite(stableWaterCm) && stableWaterCm >= 0 ? stableWaterCm : null,
+    raw_dist_cm: rawDistOk ? rawDistCm : null,
+    raw_water_cm:
+      Number.isFinite(rawWaterCm) && rawWaterCm >= 0 ? rawWaterCm : null,
+    stable_water_cm:
+      Number.isFinite(stableWaterCm) && stableWaterCm >= 0
+        ? stableWaterCm
+        : null,
 
-      us_valid: usValid,
-      accepted_for_stable: usValid ? acceptedForStable : false,
-      overflow,
+    us_valid: usValid,
+    accepted_for_stable: acceptedForStable,
+    overflow,
 
-      rain_ticks_total: Number.isFinite(rainTicksTotal) ? rainTicksTotal : null,
-      tips_60: Number.isFinite(tips60) ? tips60 : null,
-      tips_300: Number.isFinite(tips300) ? tips300 : null,
-      rain_rate_mmh_60: Number.isFinite(rainRateMmHr60) ? rainRateMmHr60 : null,
-      rain_rate_mmh_300: Number.isFinite(rainRateMmHr300) ? rainRateMmHr300 : null,
+    rain_ticks_total: Number.isFinite(rainTicksTotal) ? rainTicksTotal : null,
+    tips_60: Number.isFinite(tips60) ? tips60 : null,
+    tips_300: Number.isFinite(tips300) ? tips300 : null,
+    rain_rate_mmh_60: Number.isFinite(rainRateMmHr60) ? rainRateMmHr60 : null,
+    rain_rate_mmh_300: Number.isFinite(rainRateMmHr300)
+      ? rainRateMmHr300
+      : null,
 
-      rssi_dbm: Number.isFinite(rssiDbm) ? rssiDbm : null,
+    rssi_dbm: Number.isFinite(rssiDbm) ? rssiDbm : null,
 
-      flood_depth_cm: floodDepthCm,
-      dry_distance_cm: dryOk ? dryDistanceCm : null,
-    });
+    flood_depth_cm: floodDepthCm,
+    dry_distance_cm: dryOk ? dryDistanceCm : null,
+  });
 
-    if (error) console.error("Supabase insert error:", error);
+  if (error) {
+    console.error("Supabase insert error:", error);
+    return bad("Database insert failed", 500);
   }
 
   return NextResponse.json({
