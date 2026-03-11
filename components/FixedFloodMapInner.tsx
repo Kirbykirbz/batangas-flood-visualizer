@@ -8,6 +8,7 @@ import {
   Marker,
   Popup,
   TileLayer,
+  useMap,
 } from "react-leaflet";
 import L from "leaflet";
 import type { LatLngExpression, Layer, LeafletMouseEvent } from "leaflet";
@@ -108,6 +109,29 @@ function forecastHours(h: ForecastHorizon): number {
   }
 }
 
+function MapFocusController({
+  center,
+  focusTarget,
+}: {
+  center: LatLngExpression;
+  focusTarget: { lat: number; lng: number } | null;
+}) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (focusTarget) {
+      map.flyTo([focusTarget.lat, focusTarget.lng], Math.max(map.getZoom(), 17), {
+        duration: 0.8,
+      });
+      return;
+    }
+
+    map.flyTo(center, map.getZoom(), { duration: 0.6 });
+  }, [map, center, focusTarget]);
+
+  return null;
+}
+
 const defaultIcon = L.icon({
   iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
   iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
@@ -163,7 +187,9 @@ export default function FixedFloodMapInner({
   const [latestByDevice, setLatestByDevice] = useState<Record<string, LatestReading>>({});
   const [rainMemory, setRainMemory] = useState(0);
   const [hudOpen, setHudOpen] = useState(true);
+  const [legendOpen, setLegendOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [focusTarget, setFocusTarget] = useState<{ lat: number; lng: number } | null>(null);
 
   const lastUpdateRef = useRef<number | null>(null);
 
@@ -177,6 +203,7 @@ export default function FixedFloodMapInner({
       const mobile = window.innerWidth < 640;
       setIsMobile(mobile);
       setHudOpen(!mobile);
+      setLegendOpen(!mobile ? true : false);
     }
 
     updateMobile();
@@ -197,6 +224,7 @@ export default function FixedFloodMapInner({
   const DEPTH_FULL_CM = 30;
   const TAU_MIN = 60;
   const DEPTH_DAMP_BASE = 0.2;
+  const DEPTH_ON_CM = 5;
 
   useEffect(() => {
     let cancelled = false;
@@ -330,15 +358,28 @@ export default function FixedFloodMapInner({
 
   const riskColor = useMemo(() => getRiskColor(dynamicRisk), [dynamicRisk]);
 
+  const active = useMemo(() => {
+    return scenarioMetrics.rainMmHr > 0 || scenarioMetrics.floodDepthCm >= DEPTH_ON_CM;
+  }, [scenarioMetrics]);
+
   const zoneStyle = useMemo(() => {
+    const fillOpacity = forecastHorizon === "now" ? 0.12 : 0.2;
+    const weight = forecastHorizon === "now" ? 4 : 5;
+
     return {
       color: riskColor,
-      weight: 4,
+      weight,
       opacity: 0.95,
       fillColor: riskColor,
-      fillOpacity: forecastHorizon === "now" ? 0.12 : 0.18,
+      fillOpacity,
     };
   }, [riskColor, forecastHorizon]);
+
+  const susceptibilityOpacity = useMemo(() => {
+    if (!active) return 0.18;
+    if (forecastHorizon === "now") return 0.65;
+    return 0.82;
+  }, [active, forecastHorizon]);
 
   const onEachZoneFeature = (_feature: ZoneFeature, layer: Layer) => {
     layer.on("click", (e: LeafletMouseEvent) => {
@@ -362,7 +403,7 @@ export default function FixedFloodMapInner({
           </div>
           <hr style="margin:10px 0"/>
           <div style="color:#444">
-            Raster tiles show susceptibility/hillshade. Colored vector fill reflects current/projected scenario severity.
+            Flood zone outline only appears when the selected sensor indicates active rain or flooding.
           </div>
         </div>
       `;
@@ -372,20 +413,128 @@ export default function FixedFloodMapInner({
 
   return (
     <div className="relative">
-      <div className="absolute right-3 top-3 z-[1001]">
+      <div className={`absolute right-3 top-3 z-[1001] ${isMobile ? "flex flex-col gap-2" : "flex gap-2"}`}>
+        {userPosition && (
+          <button
+            type="button"
+            onClick={() => setFocusTarget({ lat: userPosition.lat, lng: userPosition.lng })}
+            className="rounded-xl border border-zinc-200 bg-white/95 px-3 py-2 text-[11px] sm:text-xs font-bold text-zinc-800 shadow ring-1 ring-zinc-200"
+          >
+            Locate Me
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={() =>
+            selectedDevice && setFocusTarget({ lat: selectedDevice.lat, lng: selectedDevice.lng })
+          }
+          className="rounded-xl border border-zinc-200 bg-white/95 px-3 py-2 text-[11px] sm:text-xs font-bold text-zinc-800 shadow ring-1 ring-zinc-200"
+        >
+          Go to Sensor
+        </button>
+
         <button
           type="button"
           onClick={() => setHudOpen((v) => !v)}
-          className="rounded-xl border border-zinc-200 bg-white/95 px-3 py-2 text-xs font-bold text-zinc-800 shadow ring-1 ring-zinc-200"
+          className="rounded-xl border border-zinc-200 bg-white/95 px-3 py-2 text-[11px] sm:text-xs font-bold text-zinc-800 shadow ring-1 ring-zinc-200"
         >
           {hudOpen ? "Hide Info" : "Show Info"}
         </button>
       </div>
 
+      <div className="absolute left-3 top-3 z-[1001]">
+        <div
+          className={`rounded-xl px-3 py-2 text-[11px] sm:text-xs font-extrabold shadow ring-1 ${
+            active
+              ? "bg-red-50 text-red-700 ring-red-200"
+              : "bg-zinc-50 text-zinc-700 ring-zinc-200"
+          }`}
+        >
+          {active ? "Flood Zone Active" : "Flood Zone Inactive"}
+        </div>
+      </div>
+
+      <div className="absolute left-3 bottom-3 z-[1001]">
+        {isMobile ? (
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => setLegendOpen((v) => !v)}
+              className="rounded-xl border border-zinc-200 bg-white/95 px-3 py-2 text-[11px] font-bold text-zinc-800 shadow ring-1 ring-zinc-200"
+            >
+              {legendOpen ? "Hide Legend" : "Show Legend"}
+            </button>
+
+            {legendOpen && (
+              <div className="max-w-[210px] rounded-xl bg-white/95 px-3 py-3 shadow ring-1 ring-zinc-200">
+                <div className="text-[11px] font-extrabold text-zinc-900">Map Legend</div>
+                <div className="mt-2 space-y-2 text-[11px] text-zinc-700">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-block h-3 w-3 rounded-full bg-red-500" />
+                    <span>Your location</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="inline-block h-3 w-3 rounded-full bg-zinc-900" />
+                    <span>Selected sensor</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="inline-block h-3 w-3 rounded-full bg-blue-600" />
+                    <span>Other sensors</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="inline-block h-3 w-8 rounded bg-green-500" />
+                    <span>Low risk</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="inline-block h-3 w-8 rounded bg-orange-500" />
+                    <span>Moderate risk</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="inline-block h-3 w-8 rounded bg-red-600" />
+                    <span>High risk</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="max-w-[240px] rounded-xl bg-white/95 px-4 py-3 shadow ring-1 ring-zinc-200">
+            <div className="text-xs font-extrabold text-zinc-900">Map Legend</div>
+            <div className="mt-2 space-y-2 text-xs text-zinc-700">
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-3 w-3 rounded-full bg-red-500" />
+                <span>Your location</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-3 w-3 rounded-full bg-zinc-900" />
+                <span>Selected sensor</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-3 w-3 rounded-full bg-blue-600" />
+                <span>Other sensors</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-3 w-8 rounded bg-green-500" />
+                <span>Low risk</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-3 w-8 rounded bg-orange-500" />
+                <span>Moderate risk</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-3 w-8 rounded bg-red-600" />
+                <span>High risk</span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
       {hudOpen && (
         <div
           className={`absolute z-[1000] rounded-xl bg-white/95 px-4 py-3 shadow ring-1 ring-zinc-200 ${
-            isMobile ? "left-3 right-3 top-14 max-w-none" : "right-3 top-14 max-w-[280px]"
+            isMobile ? "left-3 right-3 top-28 max-w-none" : "right-3 top-14 max-w-[280px]"
           }`}
         >
           <div className="text-xs font-semibold text-zinc-500">
@@ -420,7 +569,7 @@ export default function FixedFloodMapInner({
         center={center}
         zoom={15}
         minZoom={14}
-        maxZoom={18}
+        maxZoom={21}
         scrollWheelZoom
         maxBounds={BATANGAS_BOUNDS}
         maxBoundsViscosity={1.0}
@@ -430,24 +579,20 @@ export default function FixedFloodMapInner({
           borderRadius: "8px",
         }}
       >
+        <MapFocusController center={center} focusTarget={focusTarget} />
+
         <TileLayer
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           attribution="&copy; OpenStreetMap contributors"
         />
 
         <TileLayer
-          url="/tiles/hillshade/{z}/{x}/{y}.jpg"
-          opacity={0.45}
-          zIndex={200}
-        />
-
-        <TileLayer
           url="/tiles/susceptibility/{z}/{x}/{y}.jpg"
-          opacity={0.65}
+          opacity={susceptibilityOpacity}
           zIndex={300}
         />
 
-        {zoneGeoJson && (
+        {active && zoneGeoJson && (
           <GeoJSON
             key={`zone-${riskColor}-${forecastHorizon}-${selectedDeviceId}`}
             data={zoneGeoJson}
@@ -459,11 +604,11 @@ export default function FixedFloodMapInner({
         {userPosition && (
           <CircleMarker
             center={[userPosition.lat, userPosition.lng]}
-            radius={8}
+            radius={9}
             pathOptions={{
-              color: "#1d4ed8",
-              fillColor: "#3b82f6",
-              fillOpacity: 0.9,
+              color: "#b91c1c",
+              fillColor: "#ef4444",
+              fillOpacity: 0.95,
               weight: 2,
             }}
           >
@@ -486,16 +631,16 @@ export default function FixedFloodMapInner({
           const deviceLatest = latestByDevice[device.id] ?? null;
 
           const deviceRain =
-            (toNumber(deviceLatest?.rainRateMmHr300) ??
-              toNumber(deviceLatest?.rain_rate_mmh_300) ??
-              toNumber(deviceLatest?.rainRateMmHr60) ??
-              toNumber(deviceLatest?.rain_rate_mmh_60) ??
-              0);
+            toNumber(deviceLatest?.rainRateMmHr300) ??
+            toNumber(deviceLatest?.rain_rate_mmh_300) ??
+            toNumber(deviceLatest?.rainRateMmHr60) ??
+            toNumber(deviceLatest?.rain_rate_mmh_60) ??
+            0;
 
           const deviceDepth =
-            (toNumber(deviceLatest?.floodDepthCm) ??
-              toNumber(deviceLatest?.flood_depth_cm) ??
-              0);
+            toNumber(deviceLatest?.floodDepthCm) ??
+            toNumber(deviceLatest?.flood_depth_cm) ??
+            0;
 
           const deviceTs = (() => {
             const t = toNumber(deviceLatest?.ts);
@@ -524,7 +669,10 @@ export default function FixedFloodMapInner({
               position={[device.lat, device.lng]}
               icon={isSelected ? selectedSensorIcon : sensorIcon}
               eventHandlers={{
-                click: () => onSelectDevice(device.id),
+                click: () => {
+                  onSelectDevice(device.id);
+                  setFocusTarget({ lat: device.lat, lng: device.lng });
+                },
               }}
             >
               <Popup>
@@ -568,7 +716,10 @@ export default function FixedFloodMapInner({
                     <div style={{ marginTop: 10 }}>
                       <button
                         type="button"
-                        onClick={() => onSelectDevice(device.id)}
+                        onClick={() => {
+                          onSelectDevice(device.id);
+                          setFocusTarget({ lat: device.lat, lng: device.lng });
+                        }}
                         style={{
                           border: "1px solid #e4e4e7",
                           background: "white",
