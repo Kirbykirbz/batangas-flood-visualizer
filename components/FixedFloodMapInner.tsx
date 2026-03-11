@@ -1,34 +1,55 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MapContainer, TileLayer, GeoJSON, Marker, Popup } from "react-leaflet";
+import {
+  CircleMarker,
+  GeoJSON,
+  MapContainer,
+  Marker,
+  Popup,
+  TileLayer,
+} from "react-leaflet";
 import L from "leaflet";
 import type { LatLngExpression, Layer, LeafletMouseEvent } from "leaflet";
 import type {
   FeatureCollection,
-  Point,
   Feature,
-  Polygon,
-  MultiPolygon,
   GeoJsonProperties,
+  MultiPolygon,
+  Point,
+  Polygon,
 } from "geojson";
 import { point as turfPoint } from "@turf/helpers";
 import distance from "@turf/distance";
 import "leaflet/dist/leaflet.css";
 
+type SensorDevice = {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  zoneLabel: string;
+};
+
+type ForecastHorizon = "now" | "2h" | "4h" | "6h" | "8h";
+
 type FloodMapProps = {
-  // still passed from dashboard (unused for now)
   geoJsonData: FeatureCollection<Point, { z: number }>;
+  devices: SensorDevice[];
+  selectedDeviceId: string;
+  userPosition: { lat: number; lng: number } | null;
+  forecastHorizon: ForecastHorizon;
+  onSelectDevice: (deviceId: string) => void;
 };
 
 type LatestReading = {
   ts?: number;
-
   floodDepthCm?: number | null;
   flood_depth_cm?: number | null;
-
   rainRateMmHr60?: number | null;
   rain_rate_mmh_60?: number | null;
+  rainRateMmHr300?: number | null;
+  rain_rate_mmh_300?: number | null;
 };
 
 type ApiDataPayload = {
@@ -71,7 +92,21 @@ function fmtTime(tsMs: number | null) {
   return d.toLocaleString();
 }
 
-// Leaflet marker icon fix
+function forecastHours(h: ForecastHorizon): number {
+  switch (h) {
+    case "2h":
+      return 2;
+    case "4h":
+      return 4;
+    case "6h":
+      return 6;
+    case "8h":
+      return 8;
+    default:
+      return 0;
+  }
+}
+
 const defaultIcon = L.icon({
   iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
   iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
@@ -81,30 +116,73 @@ const defaultIcon = L.icon({
 });
 L.Marker.prototype.options.icon = defaultIcon;
 
-export default function FixedFloodMapInner({ geoJsonData }: FloodMapProps) {
+const selectedSensorIcon = L.divIcon({
+  className: "",
+  html: `
+    <div style="
+      width:22px;
+      height:22px;
+      border-radius:9999px;
+      background:#111827;
+      border:4px solid #ffffff;
+      box-shadow:0 0 0 3px rgba(17,24,39,0.25);
+    "></div>
+  `,
+  iconSize: [22, 22],
+  iconAnchor: [11, 11],
+});
+
+const sensorIcon = L.divIcon({
+  className: "",
+  html: `
+    <div style="
+      width:18px;
+      height:18px;
+      border-radius:9999px;
+      background:#2563eb;
+      border:3px solid #ffffff;
+      box-shadow:0 0 0 2px rgba(37,99,235,0.20);
+    "></div>
+  `,
+  iconSize: [18, 18],
+  iconAnchor: [9, 9],
+});
+
+export default function FixedFloodMapInner({
+  geoJsonData,
+  devices,
+  selectedDeviceId,
+  userPosition,
+  forecastHorizon,
+  onSelectDevice,
+}: FloodMapProps) {
   void geoJsonData;
-
-  // Sensor coordinate
-  const SENSOR_LAT = 13.735412678211276;
-  const SENSOR_LNG = 121.07296804092847;
-
-  const sensorLatLng: LatLngExpression = [SENSOR_LAT, SENSOR_LNG];
-  const center: LatLngExpression = sensorLatLng;
 
   const [zoneGeoJson, setZoneGeoJson] = useState<ZoneFC | null>(null);
   const [latest, setLatest] = useState<LatestReading | null>(null);
-
-  // Rain persistence memory (0..1)
   const [rainMemory, setRainMemory] = useState(0);
+
   const lastUpdateRef = useRef<number | null>(null);
 
-  // Calibrations
+  const BATANGAS_BOUNDS: [[number, number], [number, number]] = [
+    [13.63, 121.0],
+    [13.83, 121.15],
+  ];
+
+  const selectedDevice = useMemo(
+    () => devices.find((d) => d.id === selectedDeviceId) ?? devices[0] ?? null,
+    [devices, selectedDeviceId]
+  );
+
+  const center: LatLngExpression = selectedDevice
+    ? [selectedDevice.lat, selectedDevice.lng]
+    : [13.735412678211276, 121.07296804092847];
+
   const RAIN_FULL_MMHR = 50;
   const DEPTH_FULL_CM = 30;
   const TAU_MIN = 60;
   const DEPTH_DAMP_BASE = 0.2;
 
-  // Load zone GeoJSON
   useEffect(() => {
     let cancelled = false;
 
@@ -120,12 +198,12 @@ export default function FixedFloodMapInner({ geoJsonData }: FloodMapProps) {
     }
 
     loadZone();
+
     return () => {
       cancelled = true;
     };
   }, []);
 
-  // Poll latest sensor
   useEffect(() => {
     let cancelled = false;
 
@@ -142,45 +220,82 @@ export default function FixedFloodMapInner({ geoJsonData }: FloodMapProps) {
 
     loadLatest();
     const id = window.setInterval(loadLatest, 2000);
+
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
   }, []);
 
-  const floodDepthCm = useMemo(() => {
-    if (!latest) return 0;
+  const floodDepthCmCurrent = useMemo(() => {
+    if (!latest || selectedDevice?.id !== "esp32-1") return 0;
     return toNumber(latest.floodDepthCm) ?? toNumber(latest.flood_depth_cm) ?? 0;
-  }, [latest]);
+  }, [latest, selectedDevice]);
 
-  const rainMmHr = useMemo(() => {
-    if (!latest) return 0;
-    return toNumber(latest.rainRateMmHr60) ?? toNumber(latest.rain_rate_mmh_60) ?? 0;
-  }, [latest]);
+  const rainMmHrCurrent = useMemo(() => {
+    if (!latest || selectedDevice?.id !== "esp32-1") return 0;
+    return (
+      toNumber(latest.rainRateMmHr300) ??
+      toNumber(latest.rain_rate_mmh_300) ??
+      toNumber(latest.rainRateMmHr60) ??
+      toNumber(latest.rain_rate_mmh_60) ??
+      0
+    );
+  }, [latest, selectedDevice]);
 
   const tsMs = useMemo(() => {
-    if (!latest) return null;
+    if (!latest || selectedDevice?.id !== "esp32-1") return null;
     const t = toNumber(latest.ts);
     return t != null ? Math.round(t) : null;
-  }, [latest]);
-
-  const rainFactor = useMemo(() => clamp01(rainMmHr / RAIN_FULL_MMHR), [rainMmHr]);
-  const depthFactor = useMemo(() => clamp01(floodDepthCm / DEPTH_FULL_CM), [floodDepthCm]);
+  }, [latest, selectedDevice]);
 
   useEffect(() => {
     const now = Date.now();
     const last = lastUpdateRef.current;
     lastUpdateRef.current = now;
 
+    const rainFactorCurrent = clamp01(rainMmHrCurrent / RAIN_FULL_MMHR);
+
     if (last == null) {
-      setRainMemory(rainFactor);
+      setRainMemory(rainFactorCurrent);
       return;
     }
 
     const dtMin = (now - last) / 60000;
     const decay = Math.exp(-dtMin / TAU_MIN);
-    setRainMemory((prev) => Math.max(rainFactor, prev * decay));
-  }, [rainFactor]);
+    setRainMemory((prev) => Math.max(rainFactorCurrent, prev * decay));
+  }, [rainMmHrCurrent]);
+
+  const scenarioMetrics = useMemo(() => {
+    if (forecastHorizon === "now") {
+      return {
+        rainMmHr: rainMmHrCurrent,
+        floodDepthCm: floodDepthCmCurrent,
+      };
+    }
+
+    const hours = forecastHours(forecastHorizon);
+    const projectedRainMm = rainMmHrCurrent * hours;
+    const projectedDepth = Math.max(
+      floodDepthCmCurrent,
+      floodDepthCmCurrent + projectedRainMm * 0.35
+    );
+
+    return {
+      rainMmHr: rainMmHrCurrent,
+      floodDepthCm: projectedDepth,
+    };
+  }, [forecastHorizon, rainMmHrCurrent, floodDepthCmCurrent]);
+
+  const rainFactor = useMemo(
+    () => clamp01(scenarioMetrics.rainMmHr / RAIN_FULL_MMHR),
+    [scenarioMetrics.rainMmHr]
+  );
+
+  const depthFactor = useMemo(
+    () => clamp01(scenarioMetrics.floodDepthCm / DEPTH_FULL_CM),
+    [scenarioMetrics.floodDepthCm]
+  );
 
   const effectiveDepthFactor = useMemo(() => {
     const gate = DEPTH_DAMP_BASE + (1 - DEPTH_DAMP_BASE) * rainMemory;
@@ -193,43 +308,39 @@ export default function FixedFloodMapInner({ geoJsonData }: FloodMapProps) {
 
   const riskColor = useMemo(() => getRiskColor(dynamicRisk), [dynamicRisk]);
 
-  /**
-   * IMPORTANT VISIBILITY CHANGE:
-   * Your dissolved polygon covers a huge area. If we fill it strongly,
-   * it hides the raster tiles. So we make it mostly an outline.
-   */
   const zoneStyle = useMemo(() => {
     return {
       color: riskColor,
       weight: 4,
       opacity: 0.95,
-
       fillColor: riskColor,
-      fillOpacity: 0.12, // <- very low, so susceptibility tiles are visible
+      fillOpacity: forecastHorizon === "now" ? 0.12 : 0.18,
     };
-  }, [riskColor]);
+  }, [riskColor, forecastHorizon]);
 
-  // Polygon popup: distance from clicked point to sensor
   const onEachZoneFeature = (_feature: ZoneFeature, layer: Layer) => {
     layer.on("click", (e: LeafletMouseEvent) => {
+      if (!selectedDevice) return;
+
       const clickLat = e.latlng.lat;
       const clickLng = e.latlng.lng;
 
-      const a = turfPoint([SENSOR_LNG, SENSOR_LAT]);
+      const a = turfPoint([selectedDevice.lng, selectedDevice.lat]);
       const b = turfPoint([clickLng, clickLat]);
       const km = distance(a, b, { units: "kilometers" });
       const distMeters = km * 1000;
 
       const html = `
         <div style="min-width:260px">
-          <div style="font-weight:700">High susceptibility zone (dissolved)</div>
+          <div style="font-weight:700">Flood zone overview</div>
           <div style="margin-top:6px">
-            <div><b>Base susceptibility</b>: 1.0</div>
+            <div><b>Selected sensor</b>: ${selectedDevice.name}</div>
+            <div><b>Scenario</b>: ${forecastHorizon === "now" ? "Now" : `+${forecastHorizon}`}</div>
             <div><b>Distance (clicked → sensor)</b>: ${distMeters.toFixed(1)} m</div>
           </div>
           <hr style="margin:10px 0"/>
           <div style="color:#444">
-            Raster tiles show susceptibility/hillshade. Vector polygon shows live risk outline.
+            Raster tiles show susceptibility/hillshade. Colored vector fill reflects current/projected scenario severity.
           </div>
         </div>
       `;
@@ -239,21 +350,29 @@ export default function FixedFloodMapInner({ geoJsonData }: FloodMapProps) {
 
   return (
     <div className="relative">
-      {/* HUD */}
-      <div className="absolute right-3 top-3 z-[1000] rounded-xl bg-white/95 px-4 py-3 shadow ring-1 ring-zinc-200">
-        <div className="text-xs font-semibold text-zinc-500">Sensor Live</div>
+      <div className="absolute right-3 top-3 z-[1000] max-w-[280px] rounded-xl bg-white/95 px-4 py-3 shadow ring-1 ring-zinc-200">
+        <div className="text-xs font-semibold text-zinc-500">
+          {forecastHorizon === "now"
+            ? "Selected Sensor — Live"
+            : `Selected Sensor — Forecast ${forecastHorizon}`}
+        </div>
+
         <div className="mt-1 text-sm font-bold text-zinc-900">
-          Risk: {dynamicRisk.toFixed(3)} ({riskColor})
+          {selectedDevice?.name ?? "—"} • Risk: {dynamicRisk.toFixed(3)} ({riskColor})
         </div>
+
         <div className="mt-2 text-xs text-zinc-700">
-          Rain: <span className="font-semibold">{fmt(rainMmHr, 1)}</span> mm/hr
+          Rain: <span className="font-semibold">{fmt(scenarioMetrics.rainMmHr, 1)}</span> mm/hr
         </div>
+
         <div className="text-xs text-zinc-700">
-          Flood depth: <span className="font-semibold">{fmt(floodDepthCm, 1)}</span> cm
+          Flood depth: <span className="font-semibold">{fmt(scenarioMetrics.floodDepthCm, 1)}</span> cm
         </div>
+
         <div className="mt-2 text-xs text-zinc-700">
           RainMem: {rainMemory.toFixed(3)} • EffDepth: {effectiveDepthFactor.toFixed(3)}
         </div>
+
         <div className="mt-2 text-[11px] text-zinc-500">
           Updated: {fmtTime(tsMs)}
         </div>
@@ -262,56 +381,134 @@ export default function FixedFloodMapInner({ geoJsonData }: FloodMapProps) {
       <MapContainer
         center={center}
         zoom={15}
+        minZoom={14}
+        maxZoom={18}
         scrollWheelZoom
+        maxBounds={BATANGAS_BOUNDS}
+        maxBoundsViscosity={1.0}
         style={{ height: "80vh", width: "100%", borderRadius: "8px" }}
       >
-        {/* Base map */}
         <TileLayer
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           attribution="&copy; OpenStreetMap contributors"
         />
 
-        {/* Hillshade tiles (your files are .jpg) */}
-        <TileLayer
-          url="/tiles/hillshade/{z}/{x}/{y}.jpg"
-          opacity={0.45}
-          zIndex={200}
-        />
-
-        {/* Susceptibility tiles (your files are .jpg) */}
         <TileLayer
           url="/tiles/susceptibility/{z}/{x}/{y}.jpg"
           opacity={0.65}
           zIndex={300}
         />
 
-        {/* Vector zone outline on top */}
         {zoneGeoJson && (
           <GeoJSON
-            key={`zone-${riskColor}`}
+            key={`zone-${riskColor}-${forecastHorizon}-${selectedDeviceId}`}
             data={zoneGeoJson}
             style={() => zoneStyle}
             onEachFeature={onEachZoneFeature}
           />
         )}
 
-        {/* Sensor marker */}
-        <Marker position={sensorLatLng}>
-          <Popup>
-            <div style={{ minWidth: 240 }}>
-              <div style={{ fontWeight: 800, marginBottom: 6 }}>Sensor: esp32-1</div>
-              <div><b>Status</b>: {riskColor.toUpperCase()}</div>
-              <div><b>Dynamic Risk</b>: {dynamicRisk.toFixed(3)}</div>
-              <hr style={{ margin: "10px 0" }} />
-              <div><b>Rain</b>: {fmt(rainMmHr, 1)} mm/hr</div>
-              <div><b>Flood depth</b>: {fmt(floodDepthCm, 1)} cm</div>
-              <div><b>Rain memory</b>: {rainMemory.toFixed(3)}</div>
-              <div style={{ marginTop: 8, color: "#666", fontSize: 12 }}>
-                Updated: {fmtTime(tsMs)}
+        {userPosition && (
+          <CircleMarker
+            center={[userPosition.lat, userPosition.lng]}
+            radius={8}
+            pathOptions={{
+              color: "#1d4ed8",
+              fillColor: "#3b82f6",
+              fillOpacity: 0.9,
+              weight: 2,
+            }}
+          >
+            <Popup>
+              <div style={{ minWidth: 200 }}>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>Your Location</div>
+                <div>
+                  <b>Latitude</b>: {userPosition.lat.toFixed(6)}
+                </div>
+                <div>
+                  <b>Longitude</b>: {userPosition.lng.toFixed(6)}
+                </div>
               </div>
-            </div>
-          </Popup>
-        </Marker>
+            </Popup>
+          </CircleMarker>
+        )}
+
+        {devices.map((device) => {
+          const isSelected = device.id === selectedDeviceId;
+          const hasLive = device.id === "esp32-1";
+
+          return (
+            <Marker
+              key={device.id}
+              position={[device.lat, device.lng]}
+              icon={isSelected ? selectedSensorIcon : sensorIcon}
+              eventHandlers={{
+                click: () => onSelectDevice(device.id),
+              }}
+            >
+              <Popup>
+                <div style={{ minWidth: 240 }}>
+                  <div style={{ fontWeight: 800, marginBottom: 6 }}>
+                    {device.name} {isSelected ? "(Selected)" : ""}
+                  </div>
+
+                  <div>
+                    <b>Zone</b>: {device.zoneLabel}
+                  </div>
+
+                  <div>
+                    <b>Device ID</b>: {device.id}
+                  </div>
+
+                  <hr style={{ margin: "10px 0" }} />
+
+                  {hasLive ? (
+                    <>
+                      <div>
+                        <b>Scenario</b>: {forecastHorizon === "now" ? "Now" : `+${forecastHorizon}`}
+                      </div>
+                      <div>
+                        <b>Rain</b>: {fmt(scenarioMetrics.rainMmHr, 1)} mm/hr
+                      </div>
+                      <div>
+                        <b>Flood depth</b>: {fmt(scenarioMetrics.floodDepthCm, 1)} cm
+                      </div>
+                      <div>
+                        <b>Risk</b>: {dynamicRisk.toFixed(3)} ({riskColor.toUpperCase()})
+                      </div>
+                      <div style={{ marginTop: 8, color: "#666", fontSize: 12 }}>
+                        Updated: {fmtTime(tsMs)}
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ color: "#666" }}>
+                      No live device-specific backend feed yet for this sensor slot.
+                    </div>
+                  )}
+
+                  {!isSelected && (
+                    <div style={{ marginTop: 10 }}>
+                      <button
+                        type="button"
+                        onClick={() => onSelectDevice(device.id)}
+                        style={{
+                          border: "1px solid #e4e4e7",
+                          background: "white",
+                          padding: "6px 10px",
+                          borderRadius: "10px",
+                          fontWeight: 700,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Select this sensor
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </Popup>
+            </Marker>
+          );
+        })}
       </MapContainer>
     </div>
   );
