@@ -55,6 +55,7 @@ type LatestReading = {
 type ApiDataPayload = {
   latest: LatestReading | null;
   recent: LatestReading[];
+  latestByDevice?: Record<string, LatestReading>;
   serverTime: number;
 };
 
@@ -159,8 +160,10 @@ export default function FixedFloodMapInner({
   void geoJsonData;
 
   const [zoneGeoJson, setZoneGeoJson] = useState<ZoneFC | null>(null);
-  const [latest, setLatest] = useState<LatestReading | null>(null);
+  const [latestByDevice, setLatestByDevice] = useState<Record<string, LatestReading>>({});
   const [rainMemory, setRainMemory] = useState(0);
+  const [hudOpen, setHudOpen] = useState(true);
+  const [isMobile, setIsMobile] = useState(false);
 
   const lastUpdateRef = useRef<number | null>(null);
 
@@ -168,6 +171,18 @@ export default function FixedFloodMapInner({
     [13.63, 121.0],
     [13.83, 121.15],
   ];
+
+  useEffect(() => {
+    function updateMobile() {
+      const mobile = window.innerWidth < 640;
+      setIsMobile(mobile);
+      setHudOpen(!mobile);
+    }
+
+    updateMobile();
+    window.addEventListener("resize", updateMobile);
+    return () => window.removeEventListener("resize", updateMobile);
+  }, []);
 
   const selectedDevice = useMemo(
     () => devices.find((d) => d.id === selectedDeviceId) ?? devices[0] ?? null,
@@ -209,10 +224,12 @@ export default function FixedFloodMapInner({
 
     async function loadLatest() {
       try {
-        const res = await fetch(`/api/data?limit=1&t=${Date.now()}`, { cache: "no-store" });
+        const res = await fetch(`/api/data?limit=300&t=${Date.now()}`, { cache: "no-store" });
         if (!res.ok) return;
         const json = (await res.json()) as ApiDataPayload;
-        if (!cancelled) setLatest(json.latest ?? null);
+        if (!cancelled) {
+          setLatestByDevice(json.latestByDevice ?? {});
+        }
       } catch (e) {
         console.error("Failed to load latest sensor data:", e);
       }
@@ -227,27 +244,32 @@ export default function FixedFloodMapInner({
     };
   }, []);
 
+  const selectedLatest = useMemo(
+    () => (selectedDeviceId ? latestByDevice[selectedDeviceId] ?? null : null),
+    [latestByDevice, selectedDeviceId]
+  );
+
   const floodDepthCmCurrent = useMemo(() => {
-    if (!latest || selectedDevice?.id !== "esp32-1") return 0;
-    return toNumber(latest.floodDepthCm) ?? toNumber(latest.flood_depth_cm) ?? 0;
-  }, [latest, selectedDevice]);
+    if (!selectedLatest) return 0;
+    return toNumber(selectedLatest.floodDepthCm) ?? toNumber(selectedLatest.flood_depth_cm) ?? 0;
+  }, [selectedLatest]);
 
   const rainMmHrCurrent = useMemo(() => {
-    if (!latest || selectedDevice?.id !== "esp32-1") return 0;
+    if (!selectedLatest) return 0;
     return (
-      toNumber(latest.rainRateMmHr300) ??
-      toNumber(latest.rain_rate_mmh_300) ??
-      toNumber(latest.rainRateMmHr60) ??
-      toNumber(latest.rain_rate_mmh_60) ??
+      toNumber(selectedLatest.rainRateMmHr300) ??
+      toNumber(selectedLatest.rain_rate_mmh_300) ??
+      toNumber(selectedLatest.rainRateMmHr60) ??
+      toNumber(selectedLatest.rain_rate_mmh_60) ??
       0
     );
-  }, [latest, selectedDevice]);
+  }, [selectedLatest]);
 
   const tsMs = useMemo(() => {
-    if (!latest || selectedDevice?.id !== "esp32-1") return null;
-    const t = toNumber(latest.ts);
+    if (!selectedLatest) return null;
+    const t = toNumber(selectedLatest.ts);
     return t != null ? Math.round(t) : null;
-  }, [latest, selectedDevice]);
+  }, [selectedLatest]);
 
   useEffect(() => {
     const now = Date.now();
@@ -350,33 +372,49 @@ export default function FixedFloodMapInner({
 
   return (
     <div className="relative">
-      <div className="absolute right-3 top-3 z-[1000] max-w-[280px] rounded-xl bg-white/95 px-4 py-3 shadow ring-1 ring-zinc-200">
-        <div className="text-xs font-semibold text-zinc-500">
-          {forecastHorizon === "now"
-            ? "Selected Sensor — Live"
-            : `Selected Sensor — Forecast ${forecastHorizon}`}
-        </div>
-
-        <div className="mt-1 text-sm font-bold text-zinc-900">
-          {selectedDevice?.name ?? "—"} • Risk: {dynamicRisk.toFixed(3)} ({riskColor})
-        </div>
-
-        <div className="mt-2 text-xs text-zinc-700">
-          Rain: <span className="font-semibold">{fmt(scenarioMetrics.rainMmHr, 1)}</span> mm/hr
-        </div>
-
-        <div className="text-xs text-zinc-700">
-          Flood depth: <span className="font-semibold">{fmt(scenarioMetrics.floodDepthCm, 1)}</span> cm
-        </div>
-
-        <div className="mt-2 text-xs text-zinc-700">
-          RainMem: {rainMemory.toFixed(3)} • EffDepth: {effectiveDepthFactor.toFixed(3)}
-        </div>
-
-        <div className="mt-2 text-[11px] text-zinc-500">
-          Updated: {fmtTime(tsMs)}
-        </div>
+      <div className="absolute right-3 top-3 z-[1001]">
+        <button
+          type="button"
+          onClick={() => setHudOpen((v) => !v)}
+          className="rounded-xl border border-zinc-200 bg-white/95 px-3 py-2 text-xs font-bold text-zinc-800 shadow ring-1 ring-zinc-200"
+        >
+          {hudOpen ? "Hide Info" : "Show Info"}
+        </button>
       </div>
+
+      {hudOpen && (
+        <div
+          className={`absolute z-[1000] rounded-xl bg-white/95 px-4 py-3 shadow ring-1 ring-zinc-200 ${
+            isMobile ? "left-3 right-3 top-14 max-w-none" : "right-3 top-14 max-w-[280px]"
+          }`}
+        >
+          <div className="text-xs font-semibold text-zinc-500">
+            {forecastHorizon === "now"
+              ? "Selected Sensor — Live"
+              : `Selected Sensor — Forecast ${forecastHorizon}`}
+          </div>
+
+          <div className="mt-1 text-sm font-bold text-zinc-900">
+            {selectedDevice?.name ?? "—"} • Risk: {dynamicRisk.toFixed(3)} ({riskColor})
+          </div>
+
+          <div className="mt-2 text-xs text-zinc-700">
+            Rain: <span className="font-semibold">{fmt(scenarioMetrics.rainMmHr, 1)}</span> mm/hr
+          </div>
+
+          <div className="text-xs text-zinc-700">
+            Flood depth: <span className="font-semibold">{fmt(scenarioMetrics.floodDepthCm, 1)}</span> cm
+          </div>
+
+          <div className="mt-2 text-xs text-zinc-700">
+            RainMem: {rainMemory.toFixed(3)} • EffDepth: {effectiveDepthFactor.toFixed(3)}
+          </div>
+
+          <div className="mt-2 text-[11px] text-zinc-500">
+            Updated: {fmtTime(tsMs)}
+          </div>
+        </div>
+      )}
 
       <MapContainer
         center={center}
@@ -386,11 +424,21 @@ export default function FixedFloodMapInner({
         scrollWheelZoom
         maxBounds={BATANGAS_BOUNDS}
         maxBoundsViscosity={1.0}
-        style={{ height: "80vh", width: "100%", borderRadius: "8px" }}
+        style={{
+          height: isMobile ? "68vh" : "80vh",
+          width: "100%",
+          borderRadius: "8px",
+        }}
       >
         <TileLayer
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           attribution="&copy; OpenStreetMap contributors"
+        />
+
+        <TileLayer
+          url="/tiles/hillshade/{z}/{x}/{y}.jpg"
+          opacity={0.45}
+          zIndex={200}
         />
 
         <TileLayer
@@ -435,7 +483,40 @@ export default function FixedFloodMapInner({
 
         {devices.map((device) => {
           const isSelected = device.id === selectedDeviceId;
-          const hasLive = device.id === "esp32-1";
+          const deviceLatest = latestByDevice[device.id] ?? null;
+
+          const deviceRain =
+            (toNumber(deviceLatest?.rainRateMmHr300) ??
+              toNumber(deviceLatest?.rain_rate_mmh_300) ??
+              toNumber(deviceLatest?.rainRateMmHr60) ??
+              toNumber(deviceLatest?.rain_rate_mmh_60) ??
+              0);
+
+          const deviceDepth =
+            (toNumber(deviceLatest?.floodDepthCm) ??
+              toNumber(deviceLatest?.flood_depth_cm) ??
+              0);
+
+          const deviceTs = (() => {
+            const t = toNumber(deviceLatest?.ts);
+            return t != null ? Math.round(t) : null;
+          })();
+
+          const scenarioDeviceMetrics =
+            forecastHorizon === "now"
+              ? {
+                  rainMmHr: deviceRain,
+                  floodDepthCm: deviceDepth,
+                }
+              : (() => {
+                  const hours = forecastHours(forecastHorizon);
+                  const projectedRainMm = deviceRain * hours;
+                  const projectedDepth = Math.max(deviceDepth, deviceDepth + projectedRainMm * 0.35);
+                  return {
+                    rainMmHr: deviceRain,
+                    floodDepthCm: projectedDepth,
+                  };
+                })();
 
           return (
             <Marker
@@ -462,27 +543,24 @@ export default function FixedFloodMapInner({
 
                   <hr style={{ margin: "10px 0" }} />
 
-                  {hasLive ? (
+                  {deviceLatest ? (
                     <>
                       <div>
                         <b>Scenario</b>: {forecastHorizon === "now" ? "Now" : `+${forecastHorizon}`}
                       </div>
                       <div>
-                        <b>Rain</b>: {fmt(scenarioMetrics.rainMmHr, 1)} mm/hr
+                        <b>Rain</b>: {fmt(scenarioDeviceMetrics.rainMmHr, 1)} mm/hr
                       </div>
                       <div>
-                        <b>Flood depth</b>: {fmt(scenarioMetrics.floodDepthCm, 1)} cm
+                        <b>Flood depth</b>: {fmt(scenarioDeviceMetrics.floodDepthCm, 1)} cm
                       </div>
                       <div>
-                        <b>Risk</b>: {dynamicRisk.toFixed(3)} ({riskColor.toUpperCase()})
-                      </div>
-                      <div style={{ marginTop: 8, color: "#666", fontSize: 12 }}>
-                        Updated: {fmtTime(tsMs)}
+                        <b>Updated</b>: {fmtTime(deviceTs)}
                       </div>
                     </>
                   ) : (
                     <div style={{ color: "#666" }}>
-                      No live device-specific backend feed yet for this sensor slot.
+                      No recent telemetry for this sensor.
                     </div>
                   )}
 

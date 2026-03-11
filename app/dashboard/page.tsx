@@ -19,6 +19,7 @@ type AnyPoint = Record<string, unknown>;
 type Payload = {
   latest: AnyPoint | null;
   recent: AnyPoint[];
+  latestByDevice?: Record<string, AnyPoint>;
   serverTime: number;
 };
 
@@ -152,7 +153,7 @@ export default function DashboardPage() {
     []
   );
 
-  const [latestRaw, setLatestRaw] = useState<AnyPoint | null>(null);
+  const [latestByDevice, setLatestByDevice] = useState<Record<string, AnyPoint>>({});
   const [manualSelectedDeviceId, setManualSelectedDeviceId] = useState<string>("");
   const [forecastHorizon, setForecastHorizon] = useState<ForecastHorizon>("now");
   const [userPosition, setUserPosition] = useState<{ lat: number; lng: number } | null>(null);
@@ -182,11 +183,11 @@ export default function DashboardPage() {
 
     async function loadLatest() {
       try {
-        const res = await fetch(`/api/data?limit=1&t=${Date.now()}`, { cache: "no-store" });
+        const res = await fetch(`/api/data?limit=300&t=${Date.now()}`, { cache: "no-store" });
         if (!res.ok) return;
         const json: Payload = await res.json();
         if (!cancelled) {
-          setLatestRaw(json.latest ?? null);
+          setLatestByDevice(json.latestByDevice ?? {});
           setLastPollMs(json.serverTime ?? Date.now());
         }
       } catch {
@@ -231,26 +232,31 @@ export default function DashboardPage() {
     [devices, selectedDeviceId]
   );
 
+  const selectedLatest = useMemo(
+    () => (selectedDeviceId ? latestByDevice[selectedDeviceId] ?? null : null),
+    [latestByDevice, selectedDeviceId]
+  );
+
   const latestTsMs = useMemo(() => {
-    if (!latestRaw) return null;
-    return toTsMs(latestRaw.ts) ?? toTsMs(latestRaw.created_at) ?? null;
-  }, [latestRaw]);
+    if (!selectedLatest) return null;
+    return toTsMs(selectedLatest.ts) ?? toTsMs(selectedLatest.created_at) ?? null;
+  }, [selectedLatest]);
 
   const floodDepthCm = useMemo(() => {
-    if (!latestRaw || selectedDevice?.id !== "esp32-1") return null;
-    return toNumber(latestRaw.floodDepthCm) ?? toNumber(latestRaw.flood_depth_cm) ?? null;
-  }, [latestRaw, selectedDevice]);
+    if (!selectedLatest) return null;
+    return toNumber(selectedLatest.floodDepthCm) ?? toNumber(selectedLatest.flood_depth_cm) ?? null;
+  }, [selectedLatest]);
 
   const rainRateMmHr = useMemo(() => {
-    if (!latestRaw || selectedDevice?.id !== "esp32-1") return null;
+    if (!selectedLatest) return null;
     return (
-      toNumber(latestRaw.rainRateMmHr300) ??
-      toNumber(latestRaw.rain_rate_mmh_300) ??
-      toNumber(latestRaw.rainRateMmHr60) ??
-      toNumber(latestRaw.rain_rate_mmh_60) ??
+      toNumber(selectedLatest.rainRateMmHr300) ??
+      toNumber(selectedLatest.rain_rate_mmh_300) ??
+      toNumber(selectedLatest.rainRateMmHr60) ??
+      toNumber(selectedLatest.rain_rate_mmh_60) ??
       null
     );
-  }, [latestRaw, selectedDevice]);
+  }, [selectedLatest]);
 
   const isLive = useMemo(() => {
     if (!latestTsMs || !lastPollMs) return false;
@@ -297,13 +303,13 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-zinc-50">
-      <div className="mx-auto max-w-6xl px-4 py-6">
+      <div className="mx-auto max-w-6xl px-3 py-4 sm:px-4 sm:py-6">
         <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div>
             <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
               Flood Pathway Visualizer
             </div>
-            <h1 className="mt-1 text-2xl font-extrabold tracking-tight text-zinc-900">
+            <h1 className="mt-1 text-xl font-extrabold tracking-tight text-zinc-900 sm:text-2xl">
               Batangas — Live Flood Overview
             </h1>
             <div className="mt-2 text-sm text-zinc-600">
@@ -322,14 +328,14 @@ export default function DashboardPage() {
         </div>
 
         <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto]">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_auto]">
             <div>
               <div className="text-xs font-semibold text-zinc-500">Selected Sensor</div>
               <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-center">
                 <select
                   value={selectedDeviceId}
                   onChange={(e) => setManualSelectedDeviceId(e.target.value)}
-                  className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-semibold text-zinc-900"
+                  className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-semibold text-zinc-900 sm:w-auto"
                 >
                   {devices.map((d) => (
                     <option key={d.id} value={d.id}>
@@ -375,7 +381,7 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-4">
+        <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
             <div className="text-xs font-semibold text-zinc-500">
               {forecastHorizon === "now" ? "Rain Now" : `Projected Rain (${forecastHorizon})`}
@@ -433,11 +439,7 @@ export default function DashboardPage() {
             </div>
             <div className="mt-2 text-sm text-zinc-500">{selectedDevice?.zoneLabel ?? "—"}</div>
             <div className="mt-2 text-sm text-zinc-500">
-              {isLive && selectedDevice?.id === "esp32-1"
-                ? "Live telemetry available"
-                : selectedDevice?.id === "esp32-1"
-                ? "Waiting for fresh telemetry"
-                : "Future device slot / add backend support"}
+              {selectedLatest ? (isLive ? "Live telemetry available" : "Latest reading may be stale") : "No recent telemetry for this sensor"}
             </div>
           </div>
         </div>
@@ -447,7 +449,7 @@ export default function DashboardPage() {
           <div className="mt-2 text-sm text-zinc-700">{scenario.advisory}</div>
         </div>
 
-        <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm">
+        <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-2 sm:p-3 shadow-sm">
           <FixedFloodMap
             geoJsonData={emptyPoints}
             devices={devices}
