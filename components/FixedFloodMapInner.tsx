@@ -628,9 +628,9 @@ export default function FixedFloodMapInner({
         />
 
         {baseMapMode === "street" ? (
-       <TileLayer
-  url="https://tiles.stadiamaps.com/tiles/outdoors/{z}/{x}/{y}.png"
-  attribution="&copy; Stadia Maps &copy; OpenMapTiles &copy; OpenStreetMap contributors"
+<TileLayer
+  url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+  attribution="&copy; OpenStreetMap contributors &copy; CARTO"
   maxNativeZoom={20}
   maxZoom={21}
 />
