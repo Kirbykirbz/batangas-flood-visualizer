@@ -136,19 +136,19 @@ export default function DashboardPage() {
         zoneLabel: "Primary test zone",
       },
       {
-        id: "esp32-2",
-        name: "Sensor 2",
-        lat: 13.7415,
-        lng: 121.0675,
-        zoneLabel: "Future placement",
-      },
-      {
-        id: "esp32-3",
-        name: "Sensor 3",
-        lat: 13.7295,
-        lng: 121.0795,
-        zoneLabel: "Future placement",
-      },
+  id: "esp32-2",
+  name: "Sensor 2",
+  lat: 13.77057650804614,
+  lng: 121.06549040352245,
+  zoneLabel: "Secondary monitoring zone",
+},
+{
+  id: "esp32-3",
+  name: "Sensor 3",
+  lat: 13.748933930810766,
+  lng: 121.07199995881057,
+  zoneLabel: "Tertiary monitoring zone",
+},
     ],
     []
   );
