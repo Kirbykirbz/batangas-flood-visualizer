@@ -6,7 +6,7 @@ export type SensorPoint = {
 
   // Ultrasonic
   rawDistCm: number; // required (distance-to-surface)
-  rawWaterCm?: number | null; // optional; can be null if not computed/sent
+  rawWaterCm?: number | null;
   stableWaterCm?: number | null;
 
   usValid: boolean;
@@ -14,7 +14,6 @@ export type SensorPoint = {
   overflow: boolean;
 
   // Rain / tipping bucket
-  // NOTE: Prefer mm-per-tip = 0.2 mm/tip in your CLIENT/UI and any server-side derivations.
   rainTicksTotal?: number | null;
   tips60?: number | null;
   tips300?: number | null;
@@ -25,28 +24,67 @@ export type SensorPoint = {
   // Connectivity
   rssiDbm?: number | null;
 
-  // Derived (computed on server)
-  dryDistanceCm?: number | null; // from env DRY_DISTANCE_CM
-  floodDepthCm?: number | null;  // max(0, dryDistanceCm - rawDistCm)
+  // Derived
+  dryDistanceCm?: number | null;
+  floodDepthCm?: number | null;
 };
 
 const MAX_IN_MEMORY = 5000;
 
-// Keep the buffer across hot-reloads in dev
-const g = globalThis as unknown as { __sensorBuffer?: SensorPoint[] };
+// Keep buffer across hot-reloads in dev
+const g = globalThis as unknown as {
+  __sensorBuffer?: SensorPoint[];
+};
+
 if (!g.__sensorBuffer) g.__sensorBuffer = [];
+
 const buffer: SensorPoint[] = g.__sensorBuffer;
+
+function getTsValue(p: Pick<SensorPoint, "ts">): number {
+  return Number.isFinite(p.ts) ? p.ts : 0;
+}
 
 export async function appendPoint(p: SensorPoint) {
   buffer.push(p);
-  if (buffer.length > MAX_IN_MEMORY) buffer.splice(0, buffer.length - MAX_IN_MEMORY);
+  buffer.sort((a, b) => getTsValue(a) - getTsValue(b));
+
+  if (buffer.length > MAX_IN_MEMORY) {
+    buffer.splice(0, buffer.length - MAX_IN_MEMORY);
+  }
 }
 
 export function getLatest(): SensorPoint | null {
-  return buffer.length ? buffer[buffer.length - 1] : null;
+  if (!buffer.length) return null;
+  return buffer[buffer.length - 1];
 }
 
-export function getRecent(limit: number): SensorPoint[] {
-  const n = Math.max(1, Math.min(limit, MAX_IN_MEMORY));
+export function getLatestByDevice(deviceId: string): SensorPoint | null {
+  for (let i = buffer.length - 1; i >= 0; i -= 1) {
+    if (buffer[i].deviceId === deviceId) return buffer[i];
+  }
+  return null;
+}
+
+export function getRecent(limit: number, deviceId?: string | null): SensorPoint[] {
+  const n = Math.max(1, Math.min(Math.floor(limit), MAX_IN_MEMORY));
+
+  if (deviceId && deviceId.trim() !== "") {
+    const filtered = buffer.filter((p) => p.deviceId === deviceId);
+    return filtered.slice(-n);
+  }
+
   return buffer.slice(-n);
+}
+
+export function getLatestByAllDevices(): Record<string, SensorPoint> {
+  const latestMap = new Map<string, SensorPoint>();
+
+  for (const point of buffer) {
+    const prev = latestMap.get(point.deviceId);
+    if (!prev || point.ts >= prev.ts) {
+      latestMap.set(point.deviceId, point);
+    }
+  }
+
+  return Object.fromEntries(latestMap.entries());
 }

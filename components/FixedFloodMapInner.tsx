@@ -485,7 +485,7 @@ export default function FixedFloodMapInner({
         </button>
       </div>
 
-      <div className="absolute left-3 top-3 z-[1001]">
+      <div className="absolute left-12 top-3 z-[1001]">
         <div
           className={`rounded-xl px-3 py-2 text-[11px] font-extrabold shadow ring-1 sm:text-xs ${
             active

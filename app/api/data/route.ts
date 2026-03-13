@@ -1,30 +1,181 @@
 // app/api/data/route.ts
 
 import { NextResponse } from "next/server";
-import { getLatest, getRecent } from "@/app/lib/sensorStore";
+import { createClient } from "@supabase/supabase-js";
+import {
+  getLatest,
+  getLatestByAllDevices,
+  getLatestByDevice,
+  getRecent,
+  type SensorPoint,
+} from "@/app/lib/sensorStore";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type SensorPointLike = {
-  deviceId?: string | null;
-  device_id?: string | null;
-  ts?: number | string | null;
+type DbRow = {
+  device_id: string | null;
+  ts: string | null;
+
+  raw_dist_cm: number | null;
+  raw_water_cm: number | null;
+  stable_water_cm: number | null;
+
+  us_valid: boolean | null;
+  accepted_for_stable: boolean | null;
+  overflow: boolean | null;
+
+  rain_ticks_total: number | null;
+  tips_60: number | null;
+  tips_300: number | null;
+  rain_rate_mmh_60: number | null;
+  rain_rate_mmh_300: number | null;
+
+  rssi_dbm: number | null;
+
+  dry_distance_cm: number | null;
+  flood_depth_cm: number | null;
 };
 
-function getDeviceId(p: SensorPointLike): string {
-  if (typeof p.deviceId === "string" && p.deviceId.trim() !== "") return p.deviceId;
-  if (typeof p.device_id === "string" && p.device_id.trim() !== "") return p.device_id;
-  return "esp32-1";
+const supabase = (() => {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !key) return null;
+
+  return createClient(url, key, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+})();
+
+function rowToSensorPoint(row: DbRow): SensorPoint | null {
+  if (!row.ts) return null;
+
+  const tsMs = new Date(row.ts).getTime();
+  if (!Number.isFinite(tsMs)) return null;
+
+  return {
+    ts: tsMs,
+    deviceId: row.device_id ?? "esp32-1",
+
+    rawDistCm: row.raw_dist_cm ?? -1,
+    rawWaterCm: row.raw_water_cm,
+    stableWaterCm: row.stable_water_cm,
+
+    usValid: row.us_valid ?? false,
+    acceptedForStable: row.accepted_for_stable ?? false,
+    overflow: row.overflow ?? false,
+
+    rainTicksTotal: row.rain_ticks_total,
+    tips60: row.tips_60,
+    tips300: row.tips_300,
+
+    rainRateMmHr60: row.rain_rate_mmh_60,
+    rainRateMmHr300: row.rain_rate_mmh_300,
+
+    rssiDbm: row.rssi_dbm,
+
+    dryDistanceCm: row.dry_distance_cm,
+    floodDepthCm: row.flood_depth_cm,
+  };
 }
 
-function getTs(p: SensorPointLike): number {
-  if (typeof p.ts === "number" && Number.isFinite(p.ts)) return p.ts;
-  if (typeof p.ts === "string" && p.ts.trim() !== "") {
-    const n = Number(p.ts);
-    if (Number.isFinite(n)) return n;
+async function getRecentFromSupabase(limit: number, deviceId?: string | null): Promise<SensorPoint[] | null> {
+  if (!supabase) return null;
+
+  let query = supabase
+    .from("sensor_readings")
+    .select(
+      `
+      device_id,
+      ts,
+      raw_dist_cm,
+      raw_water_cm,
+      stable_water_cm,
+      us_valid,
+      accepted_for_stable,
+      overflow,
+      rain_ticks_total,
+      tips_60,
+      tips_300,
+      rain_rate_mmh_60,
+      rain_rate_mmh_300,
+      rssi_dbm,
+      dry_distance_cm,
+      flood_depth_cm
+    `
+    )
+    .order("ts", { ascending: false })
+    .limit(limit);
+
+  if (deviceId) {
+    query = query.eq("device_id", deviceId);
   }
-  return 0;
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error("Supabase recent query error:", error);
+    return null;
+  }
+
+  const normalized = (data ?? [])
+    .map((row) => rowToSensorPoint(row as DbRow))
+    .filter((x): x is SensorPoint => x !== null)
+    .sort((a, b) => a.ts - b.ts);
+
+  return normalized;
+}
+
+async function getLatestByAllDevicesFromSupabase(): Promise<Record<string, SensorPoint> | null> {
+  if (!supabase) return null;
+
+  const { data, error } = await supabase
+    .from("sensor_readings")
+    .select(
+      `
+      device_id,
+      ts,
+      raw_dist_cm,
+      raw_water_cm,
+      stable_water_cm,
+      us_valid,
+      accepted_for_stable,
+      overflow,
+      rain_ticks_total,
+      tips_60,
+      tips_300,
+      rain_rate_mmh_60,
+      rain_rate_mmh_300,
+      rssi_dbm,
+      dry_distance_cm,
+      flood_depth_cm
+    `
+    )
+    .order("ts", { ascending: false })
+    .limit(1000);
+
+  if (error) {
+    console.error("Supabase latestByDevice query error:", error);
+    return null;
+  }
+
+  const latestMap = new Map<string, SensorPoint>();
+
+  for (const raw of data ?? []) {
+    const point = rowToSensorPoint(raw as DbRow);
+    if (!point) continue;
+
+    const existing = latestMap.get(point.deviceId);
+    if (!existing || point.ts >= existing.ts) {
+      latestMap.set(point.deviceId, point);
+    }
+  }
+
+  return Object.fromEntries(latestMap.entries());
 }
 
 export async function GET(req: Request) {
@@ -37,32 +188,37 @@ export async function GET(req: Request) {
   const safeLimit =
     Number.isFinite(limit) ? Math.max(1, Math.min(Math.floor(limit), 5000)) : 300;
 
-  const allRecent = getRecent(5000) as SensorPointLike[];
-  const filteredRecent = deviceId
-    ? allRecent.filter((p) => getDeviceId(p) === deviceId)
-    : allRecent;
+  // Prefer Supabase
+  const supabaseRecent = await getRecentFromSupabase(safeLimit, deviceId);
+  const supabaseLatestByDevice = await getLatestByAllDevicesFromSupabase();
 
-  const recent = filteredRecent.slice(-safeLimit);
-  const latest = recent.length > 0 ? recent[recent.length - 1] : null;
+  if (supabaseRecent && supabaseLatestByDevice) {
+    const latest =
+      deviceId != null
+        ? (supabaseLatestByDevice[deviceId] ?? (supabaseRecent.length ? supabaseRecent[supabaseRecent.length - 1] : null))
+        : supabaseRecent.length
+        ? supabaseRecent[supabaseRecent.length - 1]
+        : null;
 
-  // Build latest reading per device for map/dashboard multi-device support
-  const latestByDeviceMap = new Map<string, SensorPointLike>();
-
-  for (const point of filteredRecent) {
-    const id = getDeviceId(point);
-    const prev = latestByDeviceMap.get(id);
-
-    if (!prev || getTs(point) >= getTs(prev)) {
-      latestByDeviceMap.set(id, point);
-    }
+    return NextResponse.json({
+      latest,
+      recent: supabaseRecent,
+      latestByDevice: supabaseLatestByDevice,
+      source: "supabase",
+      serverTime: Date.now(),
+    });
   }
 
-  const latestByDevice = Object.fromEntries(latestByDeviceMap.entries());
+  // Fallback to in-memory store
+  const recent = getRecent(safeLimit, deviceId);
+  const latest = deviceId ? getLatestByDevice(deviceId) : getLatest();
+  const latestByDevice = getLatestByAllDevices();
 
   return NextResponse.json({
     latest,
     recent,
     latestByDevice,
+    source: "memory",
     serverTime: Date.now(),
   });
 }

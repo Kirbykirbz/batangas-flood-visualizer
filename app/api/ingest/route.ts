@@ -7,6 +7,8 @@ import { appendPoint, SensorPoint } from "@/app/lib/sensorStore";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const MM_PER_TIP = Number(process.env.MM_PER_TIP ?? "0.2");
+
 const supabase = (() => {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -37,6 +39,16 @@ function bool(v: unknown): boolean {
   return false;
 }
 
+function nullableNonNegative(v: unknown): number | null {
+  const n = num(v);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+function nullableNumber(v: unknown): number | null {
+  const n = num(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 export async function POST(req: Request) {
   if (!supabase) return bad("Server missing Supabase configuration", 500);
 
@@ -56,74 +68,82 @@ export async function POST(req: Request) {
   const ts = num(body.ts);
   const deviceId = String(body.deviceId ?? "esp32-1");
 
-  // Ultrasonic
-  const rawDistCm = num(body.rawDistCm);
-  const rawWaterCm = num(body.rawWaterCm);
-  const stableWaterCm = num(body.stableWaterCm);
-
-  // Flags
-  const usValidIn = bool(body.usValid);
-  const acceptedForStableIn = bool(body.acceptedForStable);
-  const overflow = bool(body.overflow);
-
-  // Rain
-  const rainTicksTotal = num(body.rainTicksTotal);
-  const tips60 = num(body.tips60);
-  const tips300 = num(body.tips300);
-  const rainRateMmHr60 = num(body.rainRateMmHr60);
-  const rainRateMmHr300 = num(body.rainRateMmHr300);
-
-  // Signal / connectivity
-  const rssiDbm = num(body.rssiDbm);
-
   if (!Number.isFinite(ts)) return bad("ts invalid");
 
-  // ESP may send -1 when ultrasonic is invalid
+  // Raw ultrasonic
+  const rawDistCm = num(body.rawDistCm);
   const rawDistOk = Number.isFinite(rawDistCm) && rawDistCm > 0;
 
-  // Trust ESP validity, but force invalid if distance itself is unusable
+  // Flags from device
+  const usValidIn = bool(body.usValid);
+  const acceptedForStableIn = bool(body.acceptedForStable);
+  const overflowIn = bool(body.overflow);
+
+  // Final ultrasonic validity
   const usValid = usValidIn && rawDistOk;
   const acceptedForStable = usValid ? acceptedForStableIn : false;
+  const overflow = overflowIn || (rawDistOk && rawDistCm < 20);
 
-  // Server-side calibration
+  // Server-side dry calibration
   const dryDistanceCm = Number(process.env.DRY_DISTANCE_CM);
   const dryOk = Number.isFinite(dryDistanceCm);
 
-  // Only compute flood depth when ultrasonic is valid
+  // Prefer server-computed water depth values
+  const rawWaterFromServer =
+    dryOk && rawDistOk ? Math.max(0, dryDistanceCm - rawDistCm) : null;
+
   const floodDepthCm =
     dryOk && usValid ? Math.max(0, dryDistanceCm - rawDistCm) : null;
+
+  // Accept device values if provided, otherwise fall back to server values
+  const rawWaterCm = nullableNonNegative(body.rawWaterCm) ?? rawWaterFromServer;
+  const stableWaterCm = nullableNonNegative(body.stableWaterCm) ?? rawWaterFromServer;
+
+  // Rain values
+  const rainTicksTotal = nullableNonNegative(body.rainTicksTotal);
+  const tips60 = nullableNonNegative(body.tips60);
+  const tips300 = nullableNonNegative(body.tips300);
+
+  // Prefer server-side rain-rate calculation when tips exist
+  const rainRateMmHr60 =
+    tips60 != null
+      ? tips60 * MM_PER_TIP * 60
+      : nullableNonNegative(body.rainRateMmHr60);
+
+  const rainRateMmHr300 =
+    tips300 != null
+      ? tips300 * MM_PER_TIP * 12
+      : nullableNonNegative(body.rainRateMmHr300);
+
+  // Signal
+  const rssiDbm = nullableNumber(body.rssiDbm);
 
   const point: SensorPoint = {
     ts,
     deviceId,
 
-    // keep raw distance for debugging, even if invalid
     rawDistCm: rawDistOk ? rawDistCm : -1,
 
-    rawWaterCm:
-      Number.isFinite(rawWaterCm) && rawWaterCm >= 0 ? rawWaterCm : null,
-    stableWaterCm:
-      Number.isFinite(stableWaterCm) && stableWaterCm >= 0
-        ? stableWaterCm
-        : null,
+    rawWaterCm,
+    stableWaterCm,
 
     usValid,
     acceptedForStable,
     overflow,
 
-    rainTicksTotal: Number.isFinite(rainTicksTotal) ? rainTicksTotal : null,
-    tips60: Number.isFinite(tips60) ? tips60 : null,
-    tips300: Number.isFinite(tips300) ? tips300 : null,
-    rainRateMmHr60: Number.isFinite(rainRateMmHr60) ? rainRateMmHr60 : null,
-    rainRateMmHr300: Number.isFinite(rainRateMmHr300) ? rainRateMmHr300 : null,
+    rainTicksTotal,
+    tips60,
+    tips300,
+    rainRateMmHr60,
+    rainRateMmHr300,
 
-    rssiDbm: Number.isFinite(rssiDbm) ? rssiDbm : null,
+    rssiDbm,
 
     dryDistanceCm: dryOk ? dryDistanceCm : null,
     floodDepthCm,
   };
 
-  // Keep for local convenience only; do not rely on this in production reads
+  // Local cache / convenience only
   await appendPoint(point);
 
   const tsIso = new Date(ts).toISOString();
@@ -133,26 +153,20 @@ export async function POST(req: Request) {
     ts: tsIso,
 
     raw_dist_cm: rawDistOk ? rawDistCm : null,
-    raw_water_cm:
-      Number.isFinite(rawWaterCm) && rawWaterCm >= 0 ? rawWaterCm : null,
-    stable_water_cm:
-      Number.isFinite(stableWaterCm) && stableWaterCm >= 0
-        ? stableWaterCm
-        : null,
+    raw_water_cm: rawWaterCm,
+    stable_water_cm: stableWaterCm,
 
     us_valid: usValid,
     accepted_for_stable: acceptedForStable,
     overflow,
 
-    rain_ticks_total: Number.isFinite(rainTicksTotal) ? rainTicksTotal : null,
-    tips_60: Number.isFinite(tips60) ? tips60 : null,
-    tips_300: Number.isFinite(tips300) ? tips300 : null,
-    rain_rate_mmh_60: Number.isFinite(rainRateMmHr60) ? rainRateMmHr60 : null,
-    rain_rate_mmh_300: Number.isFinite(rainRateMmHr300)
-      ? rainRateMmHr300
-      : null,
+    rain_ticks_total: rainTicksTotal,
+    tips_60: tips60,
+    tips_300: tips300,
+    rain_rate_mmh_60: rainRateMmHr60,
+    rain_rate_mmh_300: rainRateMmHr300,
 
-    rssi_dbm: Number.isFinite(rssiDbm) ? rssiDbm : null,
+    rssi_dbm: rssiDbm,
 
     flood_depth_cm: floodDepthCm,
     dry_distance_cm: dryOk ? dryDistanceCm : null,
@@ -169,8 +183,12 @@ export async function POST(req: Request) {
       deviceId,
       usValid,
       rawDistCm: rawDistOk ? rawDistCm : null,
+      rawWaterCm,
+      stableWaterCm,
       dryDistanceCm: dryOk ? dryDistanceCm : null,
       floodDepthCm,
+      rainRateMmHr60,
+      rainRateMmHr300,
     },
   });
 }

@@ -310,9 +310,9 @@ export default function DashboardPage() {
               Flood Pathway Visualizer
             </div>
             <h1 className="mt-1 text-xl font-extrabold tracking-tight text-zinc-900 sm:text-2xl">
-              Batangas — Live Flood Overview
+              Batangas City Flood Overview
             </h1>
-            <div className="mt-2 text-sm text-zinc-600">
+            <div className="mt-1 text-sm text-zinc-600">
               See current rain, flood depth, warning level, and scenario projections at a selected sensor location.
             </div>
           </div>

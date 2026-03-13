@@ -8,10 +8,10 @@ export default function Home() {
         
         {/* Logo / Icon */}
         <Image
-  src="/flood-icon.png" // notice the leading slash
-  alt="Flood Visualizer Logo"
-  width={100}
-  height={200}
+  src="/flood-icon.png"
+  alt="Batangas City Flood Visualizer Logo"
+  width={120}
+  height={120}
   className="rounded-full border-2 border-blue-600"
   priority
 />
@@ -20,7 +20,7 @@ export default function Home() {
         {/* Title & Tagline */}
         <div className="flex flex-col gap-4">
           <h1 className="text-4xl font-bold text-gray-900 dark:text-zinc-50">
-            AIoT Flood Pathway Visualizer
+            IoT Flood Pathway Visualizer
           </h1>
           <p className="text-lg text-gray-600 dark:text-zinc-400 max-w-md">
             Monitor flood risks in your community in real-time, view water levels, rainfall trends, and predicted flood pathways.
