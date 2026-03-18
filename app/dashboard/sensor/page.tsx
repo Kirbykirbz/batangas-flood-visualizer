@@ -346,7 +346,7 @@ export default function SensorDashboardPage() {
   const POLL_LOGS_MS = 5000;
 
   const CM_PER_FT = 30.48;
-  const MM_PER_TIP = 0.2;
+  const MM_PER_TIP = 0.327;
   const DEPTH_ON_CM = 5;
 
   const [latestRaw, setLatestRaw] = useState<AnyPoint | null>(null);
