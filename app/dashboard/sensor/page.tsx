@@ -296,7 +296,7 @@ function normalizePoint(p: AnyPoint, nowMs: number): NormalizedPoint {
   const floodDepthCm =
     toNumber(p.floodDepthCm) ?? toNumber(p.flood_depth_cm) ?? null;
 
-  const MM_PER_TIP = 0.0327;
+  const MM_PER_TIP = 0.327;
   const rainMm60 = tips60 != null ? tips60 * MM_PER_TIP : null;
   const rainMm300 = tips300 != null ? tips300 * MM_PER_TIP : null;
 
