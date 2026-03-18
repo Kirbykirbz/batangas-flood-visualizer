@@ -24,6 +24,10 @@ export type SensorPoint = {
   // Connectivity
   rssiDbm?: number | null;
 
+  vbatV?: number | null;
+  currentMa?: number | null;
+  batteryPercentage?: number | null;
+
   // Derived
   dryDistanceCm?: number | null;
   floodDepthCm?: number | null;

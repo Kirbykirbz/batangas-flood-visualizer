@@ -115,8 +115,13 @@ export async function POST(req: Request) {
       ? tips300 * MM_PER_TIP * 12
       : nullableNonNegative(body.rainRateMmHr300);
 
-  // Signal
+  // Signal (Updated for LTE rssiDbm)
   const rssiDbm = nullableNumber(body.rssiDbm);
+
+  // --- NEW: INA219 Power & Battery Metrics ---
+  const vbatV = nullableNumber(body.vbatV);
+  const currentMa = nullableNumber(body.currentMa);
+  const batteryPercentage = nullableNumber(body.batteryPercentage);
 
   const point: SensorPoint = {
     ts,
@@ -141,6 +146,11 @@ export async function POST(req: Request) {
 
     dryDistanceCm: dryOk ? dryDistanceCm : null,
     floodDepthCm,
+
+    // Include new power fields in local cache
+    vbatV,
+    currentMa,
+    batteryPercentage,
   };
 
   // Local cache / convenience only
@@ -170,6 +180,11 @@ export async function POST(req: Request) {
 
     flood_depth_cm: floodDepthCm,
     dry_distance_cm: dryOk ? dryDistanceCm : null,
+
+    // --- NEW: Database Mappings for Power ---
+    vbat_v: vbatV,
+    current_ma: currentMa,
+    battery_percentage: batteryPercentage,
   });
 
   if (error) {
@@ -189,6 +204,7 @@ export async function POST(req: Request) {
       floodDepthCm,
       rainRateMmHr60,
       rainRateMmHr300,
+      batteryPercentage, // Included in response for device verification
     },
   });
 }
