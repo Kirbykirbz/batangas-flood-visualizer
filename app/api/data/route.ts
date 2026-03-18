@@ -13,6 +13,7 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// 1. Updated Database Row Type to include Battery & LTE metrics
 type DbRow = {
   device_id: string | null;
   ts: string | null;
@@ -35,6 +36,12 @@ type DbRow = {
 
   dry_distance_cm: number | null;
   flood_depth_cm: number | null;
+
+  // --- NEW: INA219 Power & LTE Network Columns ---
+  vbat_v: number | null;
+  current_ma: number | null;
+  battery_percentage: number | null;
+  network_type: string | null;
 };
 
 const supabase = (() => {
@@ -51,6 +58,7 @@ const supabase = (() => {
   });
 })();
 
+// 2. Updated Mapper to pass new data to your React frontend
 function rowToSensorPoint(row: DbRow): SensorPoint | null {
   if (!row.ts) return null;
 
@@ -80,12 +88,20 @@ function rowToSensorPoint(row: DbRow): SensorPoint | null {
 
     dryDistanceCm: row.dry_distance_cm,
     floodDepthCm: row.flood_depth_cm,
-  };
+
+    // --- NEW: Map DB rows to SensorPoint properties ---
+    vbatV: row.vbat_v,
+    currentMa: row.current_ma,
+    batteryPercentage: row.battery_percentage,
+    networkType: row.network_type,
+  } as SensorPoint; 
+  // Note: Cast as SensorPoint to prevent TS errors if sensorStore isn't updated yet
 }
 
 async function getRecentFromSupabase(limit: number, deviceId?: string | null): Promise<SensorPoint[] | null> {
   if (!supabase) return null;
 
+  // 3. Updated SELECT query for recent data
   let query = supabase
     .from("sensor_readings")
     .select(
@@ -105,7 +121,11 @@ async function getRecentFromSupabase(limit: number, deviceId?: string | null): P
       rain_rate_mmh_300,
       rssi_dbm,
       dry_distance_cm,
-      flood_depth_cm
+      flood_depth_cm,
+      vbat_v,
+      current_ma,
+      battery_percentage,
+      network_type
     `
     )
     .order("ts", { ascending: false })
@@ -133,6 +153,7 @@ async function getRecentFromSupabase(limit: number, deviceId?: string | null): P
 async function getLatestByAllDevicesFromSupabase(): Promise<Record<string, SensorPoint> | null> {
   if (!supabase) return null;
 
+  // 4. Updated SELECT query for latest data map
   const { data, error } = await supabase
     .from("sensor_readings")
     .select(
@@ -152,7 +173,11 @@ async function getLatestByAllDevicesFromSupabase(): Promise<Record<string, Senso
       rain_rate_mmh_300,
       rssi_dbm,
       dry_distance_cm,
-      flood_depth_cm
+      flood_depth_cm,
+      vbat_v,
+      current_ma,
+      battery_percentage,
+      network_type
     `
     )
     .order("ts", { ascending: false })

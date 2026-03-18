@@ -122,6 +122,7 @@ export async function POST(req: Request) {
   const vbatV = nullableNumber(body.vbatV);
   const currentMa = nullableNumber(body.currentMa);
   const batteryPercentage = nullableNumber(body.batteryPercentage);
+  const networkType = typeof body.networkType === "string" ? body.networkType : null;
 
   const point: SensorPoint = {
     ts,
@@ -185,6 +186,7 @@ export async function POST(req: Request) {
     vbat_v: vbatV,
     current_ma: currentMa,
     battery_percentage: batteryPercentage,
+    network_type: networkType,
   });
 
   if (error) {
