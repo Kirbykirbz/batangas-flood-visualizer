@@ -52,25 +52,39 @@ function FeedbackModal({
   message: FeedbackMessageRecord;
   updatingId: number | null;
   onClose: () => void;
-  onStatusChange: (id: number, status: FeedbackMessageRecord["status"]) => Promise<void>;
+  onStatusChange: (
+    id: number,
+    status: FeedbackMessageRecord["status"]
+  ) => Promise<void>;
 }) {
+  useEffect(() => {
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = originalOverflow;
+    };
+  }, []);
+
   return createPortal(
     <div className="fixed inset-0 z-[9999]">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-[1px]" onClick={onClose} />
 
       <div className="absolute inset-0 overflow-y-auto">
-        <div className="flex min-h-full items-start justify-center px-4 pb-6 pt-24 sm:px-6 sm:pt-28 md:pt-32">
-          <div className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl ring-1 ring-zinc-200">
-            <div className="flex items-start justify-between gap-4 border-b border-zinc-200 px-5 py-4">
-              <div className="min-w-0">
-                <div className="break-words text-lg font-extrabold text-zinc-900">
+        <div className="flex min-h-full items-end justify-center p-3 sm:items-center sm:p-6">
+          <div className="flex max-h-[92dvh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-zinc-200 sm:max-h-[88vh] sm:rounded-3xl">
+            <div className="flex items-start justify-between gap-3 border-b border-zinc-200 px-4 py-4 sm:px-5">
+              <div className="min-w-0 flex-1">
+                <div className="break-words text-base font-extrabold text-zinc-900 sm:text-lg">
                   {message.subject?.trim() || "No subject"}
                 </div>
-                <div className="mt-1 break-words text-sm text-zinc-500">
+
+                <div className="mt-1 break-words text-xs text-zinc-500 sm:text-sm">
                   {message.name?.trim() || "Anonymous"}
                   {message.email ? ` • ${message.email}` : ""}
                 </div>
-                <div className="mt-1 text-xs text-zinc-500">
+
+                <div className="mt-1 text-[11px] text-zinc-500 sm:text-xs">
                   {fmtTime(message.created_at)}
                 </div>
               </div>
@@ -78,13 +92,14 @@ function FeedbackModal({
               <button
                 type="button"
                 onClick={onClose}
-                className="shrink-0 rounded-lg px-2 py-1 text-sm font-semibold text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700"
+                aria-label="Close message"
+                className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-base font-semibold text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-700"
               >
                 ✕
               </button>
             </div>
 
-            <div className="max-h-[60vh] overflow-y-auto px-5 py-5">
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5">
               <div className="mb-4 flex flex-wrap items-center gap-2">
                 <span
                   className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${statusClasses(
@@ -95,7 +110,7 @@ function FeedbackModal({
                 </span>
 
                 {message.resolved_at && (
-                  <span className="text-xs text-zinc-500">
+                  <span className="text-[11px] text-zinc-500 sm:text-xs">
                     Resolved: {fmtTime(message.resolved_at)}
                   </span>
                 )}
@@ -109,13 +124,13 @@ function FeedbackModal({
               </div>
             </div>
 
-            <div className="border-t border-zinc-200 bg-white px-5 py-4">
-              <div className="flex flex-wrap gap-2">
+            <div className="border-t border-zinc-200 bg-white px-4 py-4 sm:px-5">
+              <div className="grid grid-cols-1 gap-2 sm:flex sm:flex-wrap">
                 <button
                   type="button"
                   disabled={updatingId === message.id}
                   onClick={() => onStatusChange(message.id, "read")}
-                  className="rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 hover:bg-zinc-50 disabled:opacity-60"
+                  className="inline-flex min-h-11 items-center justify-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 transition hover:bg-zinc-50 disabled:opacity-60"
                 >
                   Mark Read
                 </button>
@@ -124,7 +139,7 @@ function FeedbackModal({
                   type="button"
                   disabled={updatingId === message.id}
                   onClick={() => onStatusChange(message.id, "resolved")}
-                  className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-60"
+                  className="inline-flex min-h-11 items-center justify-center rounded-xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-emerald-700 disabled:opacity-60"
                 >
                   Resolve
                 </button>
@@ -133,7 +148,7 @@ function FeedbackModal({
                   type="button"
                   disabled={updatingId === message.id}
                   onClick={() => onStatusChange(message.id, "new")}
-                  className="rounded-xl bg-amber-600 px-4 py-2 text-sm font-bold text-white hover:bg-amber-700 disabled:opacity-60"
+                  className="inline-flex min-h-11 items-center justify-center rounded-xl bg-amber-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-amber-700 disabled:opacity-60"
                 >
                   Mark New
                 </button>
@@ -141,7 +156,7 @@ function FeedbackModal({
                 <button
                   type="button"
                   onClick={onClose}
-                  className="ml-auto rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 hover:bg-zinc-50"
+                  className="inline-flex min-h-11 items-center justify-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 transition hover:bg-zinc-50 sm:ml-auto"
                 >
                   Close
                 </button>
@@ -160,7 +175,8 @@ export default function AdminFeedbackInbox() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [selectedMessage, setSelectedMessage] = useState<FeedbackMessageRecord | null>(null);
+  const [selectedMessage, setSelectedMessage] =
+    useState<FeedbackMessageRecord | null>(null);
   const [updatingId, setUpdatingId] = useState<number | null>(null);
 
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -291,10 +307,12 @@ export default function AdminFeedbackInbox() {
         </button>
 
         {dropdownOpen && (
-          <div className="absolute right-0 top-14 z-[3200] w-[min(92vw,380px)] overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl">
+          <div className="absolute right-0 top-14 z-[3200] w-[min(92vw,380px)] overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl sm:w-[380px]">
             <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
-              <div>
-                <div className="text-sm font-extrabold text-zinc-900">Feedback Inbox</div>
+              <div className="min-w-0">
+                <div className="text-sm font-extrabold text-zinc-900">
+                  Feedback Inbox
+                </div>
                 <div className="text-xs text-zinc-500">
                   Recent messages from public users
                 </div>
@@ -320,7 +338,7 @@ export default function AdminFeedbackInbox() {
             ) : recentMessages.length === 0 ? (
               <div className="px-4 py-6 text-sm text-zinc-500">No messages yet.</div>
             ) : (
-              <div className="max-h-[420px] overflow-y-auto">
+              <div className="max-h-[60vh] overflow-y-auto sm:max-h-[420px]">
                 {recentMessages.map((message) => (
                   <button
                     key={message.id}
