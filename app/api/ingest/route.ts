@@ -5,44 +5,153 @@ import { appendPoint, type SensorPoint } from "@/app/lib/sensorStore";
 import { processRainEventForReading } from "@/app/lib/rainEventEngine";
 import { processAlertsForReading } from "@/app/lib/alertsEngine";
 import { supabaseAdmin } from "@/app/lib/supabaseAdmin";
+import {
+  deriveCanonicalSensorFields,
+  nullableEpochMs,
+} from "@/app/lib/canonicalSensorReading";
+import { toNumber } from "@/app/lib/sensorReading";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const MM_PER_TIP = Number(process.env.MM_PER_TIP ?? "0.2");
+type SensorMetaRow = {
+  id: string;
+  dry_distance_cm: number | null;
+  is_active: boolean;
+};
 
-function bad(msg: string, status = 400) {
-  return NextResponse.json({ ok: false, error: msg }, { status });
+type InsertReadingRow = {
+  device_id: string;
+  ts: string;
+  raw_dist_cm: number | null;
+  raw_water_cm: number | null;
+  stable_water_cm: number | null;
+  us_valid: boolean;
+  accepted_for_stable: boolean;
+  overflow: boolean;
+  rain_ticks_total: number | null;
+  tips_60: number | null;
+  tips_300: number | null;
+  rain_rate_mmh_60: number | null;
+  rain_rate_mmh_300: number | null;
+  rssi_dbm: number | null;
+  flood_depth_cm: number | null;
+  dry_distance_cm: number | null;
+  vbat_v: number | null;
+  current_ma: number | null;
+  battery_percentage: number | null;
+  network_type: string | null;
+};
+
+function bad(message: string, status = 400) {
+  return NextResponse.json({ ok: false, error: message }, { status });
 }
 
-function num(v: unknown): number {
-  const n = typeof v === "number" ? v : Number(v);
-  return Number.isFinite(n) ? n : NaN;
+function resolveMmPerTip(): number {
+  const n = toNumber(process.env.MM_PER_TIP);
+  return n != null && n > 0 ? n : 0.27;
 }
 
-function bool(v: unknown): boolean {
-  if (typeof v === "boolean") return v;
-  if (typeof v === "string") return v.toLowerCase() === "true";
-  if (typeof v === "number") return v === 1;
-  return false;
+async function getSensorMeta(deviceId: string): Promise<SensorMetaRow | null> {
+  const { data, error } = await supabaseAdmin
+    .from("sensors")
+    .select("id, dry_distance_cm, is_active")
+    .eq("id", deviceId)
+    .single();
+
+  if (error) {
+    if (error.code === "PGRST116") return null;
+    throw error;
+  }
+
+  return data as SensorMetaRow;
 }
 
-function nullableNonNegative(v: unknown): number | null {
-  const n = num(v);
-  return Number.isFinite(n) && n >= 0 ? n : null;
+function buildCanonicalPoint(args: {
+  ts: number;
+  deviceId: string;
+  derived: ReturnType<typeof deriveCanonicalSensorFields>;
+}): SensorPoint {
+  const { ts, deviceId, derived } = args;
+
+  return {
+    ts,
+    deviceId,
+
+    rawDistCm: derived.rawDistCm,
+    rawWaterCm: derived.rawWaterCm,
+    stableWaterCm: derived.stableWaterCm,
+
+    usValid: derived.usValid,
+    acceptedForStable: derived.acceptedForStable,
+    overflow: derived.overflow,
+
+    rainTicksTotal: derived.rainTicksTotal,
+    tips60: derived.tips60,
+    tips300: derived.tips300,
+
+    rainRateMmHr60: derived.rainRateMmHr60,
+    rainRateMmHr300: derived.rainRateMmHr300,
+
+    rssiDbm: derived.rssiDbm,
+
+    dryDistanceCm: derived.dryDistanceCm,
+    floodDepthCm: derived.floodDepthCm,
+
+    vbatV: derived.vbatV,
+    currentMa: derived.currentMa,
+    batteryPercentage: derived.batteryPercentage,
+    networkType: derived.networkType,
+  };
 }
 
-function nullableNumber(v: unknown): number | null {
-  const n = num(v);
-  return Number.isFinite(n) ? n : null;
+function buildInsertRow(args: {
+  deviceId: string;
+  tsIso: string;
+  derived: ReturnType<typeof deriveCanonicalSensorFields>;
+}): InsertReadingRow {
+  const { deviceId, tsIso, derived } = args;
+
+  return {
+    device_id: deviceId,
+    ts: tsIso,
+
+    raw_dist_cm: derived.rawDistCm,
+    raw_water_cm: derived.rawWaterCm,
+    stable_water_cm: derived.stableWaterCm,
+
+    us_valid: derived.usValid,
+    accepted_for_stable: derived.acceptedForStable,
+    overflow: derived.overflow,
+
+    rain_ticks_total: derived.rainTicksTotal,
+    tips_60: derived.tips60,
+    tips_300: derived.tips300,
+    rain_rate_mmh_60: derived.rainRateMmHr60,
+    rain_rate_mmh_300: derived.rainRateMmHr300,
+
+    rssi_dbm: derived.rssiDbm,
+
+    flood_depth_cm: derived.floodDepthCm,
+    dry_distance_cm: derived.dryDistanceCm,
+
+    vbat_v: derived.vbatV,
+    current_ma: derived.currentMa,
+    battery_percentage: derived.batteryPercentage,
+    network_type: derived.networkType,
+  };
 }
 
 export async function POST(req: Request) {
   const secret = process.env.INGEST_SECRET;
-  if (!secret) return bad("Server missing INGEST_SECRET", 500);
+  if (!secret) {
+    return bad("Server missing INGEST_SECRET", 500);
+  }
 
   const auth = req.headers.get("x-ingest-secret");
-  if (auth !== secret) return bad("Unauthorized", 401);
+  if (auth !== secret) {
+    return bad("Unauthorized", 401);
+  }
 
   let body: Record<string, unknown>;
   try {
@@ -51,159 +160,114 @@ export async function POST(req: Request) {
     return bad("Invalid JSON");
   }
 
-  const ts = num(body.ts);
-  const deviceId = String(body.deviceId ?? "esp32-1");
+  const deviceId = String(body.deviceId ?? "").trim();
+  const ts = nullableEpochMs(body.ts);
 
-  if (!Number.isFinite(ts)) return bad("ts invalid");
+  if (!deviceId) {
+    return bad("deviceId missing");
+  }
 
-  // Raw ultrasonic
-  const rawDistCm = num(body.rawDistCm);
-  const rawDistOk = Number.isFinite(rawDistCm) && rawDistCm > 0;
+  if (ts == null) {
+    return bad("ts invalid");
+  }
 
-  // Flags from device
-  const usValidIn = bool(body.usValid);
-  const acceptedForStableIn = bool(body.acceptedForStable);
-  const overflowIn = bool(body.overflow);
+  let sensor: SensorMetaRow | null;
+  try {
+    sensor = await getSensorMeta(deviceId);
+  } catch (error) {
+    console.error("[ingest] getSensorMeta failed:", error);
+    return bad("Failed to load sensor metadata", 500);
+  }
 
-  // Final ultrasonic validity
-  const usValid = usValidIn && rawDistOk;
-  const acceptedForStable = usValid ? acceptedForStableIn : false;
-  const overflow = overflowIn || (rawDistOk && rawDistCm < 20);
+  if (!sensor) {
+    return bad(`Unknown sensor: ${deviceId}`, 404);
+  }
 
-  // Server-side dry calibration
-  const dryDistanceCm = Number(process.env.DRY_DISTANCE_CM);
-  const dryOk = Number.isFinite(dryDistanceCm);
+  if (!sensor.is_active) {
+    return bad(`Sensor is inactive: ${deviceId}`, 403);
+  }
 
-  // Server-computed water depth
-  const rawWaterFromServer =
-    dryOk && rawDistOk ? Math.max(0, dryDistanceCm - rawDistCm) : null;
+  const fallbackEnvDryDistanceCm = toNumber(process.env.DRY_DISTANCE_CM);
+  const mmPerTip = resolveMmPerTip();
 
-  const floodDepthCm =
-    dryOk && usValid ? Math.max(0, dryDistanceCm - rawDistCm) : null;
-
-  // Accept device values if provided, otherwise fall back to server values
-  const rawWaterCm = nullableNonNegative(body.rawWaterCm) ?? rawWaterFromServer;
-  const stableWaterCm = nullableNonNegative(body.stableWaterCm) ?? rawWaterFromServer;
-
-  // Rain values
-  const rainTicksTotal = nullableNonNegative(body.rainTicksTotal);
-  const tips60 = nullableNonNegative(body.tips60);
-  const tips300 = nullableNonNegative(body.tips300);
-
-  // Prefer server-side rain rate calculation when tips exist
-  const rainRateMmHr60 =
-    tips60 != null
-      ? tips60 * MM_PER_TIP * 60
-      : nullableNonNegative(body.rainRateMmHr60);
-
-  const rainRateMmHr300 =
-    tips300 != null
-      ? tips300 * MM_PER_TIP * 12
-      : nullableNonNegative(body.rainRateMmHr300);
-
-  // Signal / power / network
-  const rssiDbm = nullableNumber(body.rssiDbm);
-  const vbatV = nullableNumber(body.vbatV);
-  const currentMa = nullableNumber(body.currentMa);
-  const batteryPercentage = nullableNumber(body.batteryPercentage);
-  const networkType = typeof body.networkType === "string" ? body.networkType : null;
-
-  const point: SensorPoint = {
-    ts,
-    deviceId,
-
-    rawDistCm: rawDistOk ? rawDistCm : -1,
-
-    rawWaterCm,
-    stableWaterCm,
-
-    usValid,
-    acceptedForStable,
-    overflow,
-
-    rainTicksTotal,
-    tips60,
-    tips300,
-    rainRateMmHr60,
-    rainRateMmHr300,
-
-    rssiDbm,
-
-    dryDistanceCm: dryOk ? dryDistanceCm : null,
-    floodDepthCm,
-
-    vbatV,
-    currentMa,
-    batteryPercentage,
-    networkType,
-  };
-
-  const tsIso = new Date(ts).toISOString();
-
-  const { error } = await supabaseAdmin.from("sensor_readings").insert({
-    device_id: deviceId,
-    ts: tsIso,
-
-    raw_dist_cm: rawDistOk ? rawDistCm : null,
-    raw_water_cm: rawWaterCm,
-    stable_water_cm: stableWaterCm,
-
-    us_valid: usValid,
-    accepted_for_stable: acceptedForStable,
-    overflow,
-
-    rain_ticks_total: rainTicksTotal,
-    tips_60: tips60,
-    tips_300: tips300,
-    rain_rate_mmh_60: rainRateMmHr60,
-    rain_rate_mmh_300: rainRateMmHr300,
-
-    rssi_dbm: rssiDbm,
-
-    flood_depth_cm: floodDepthCm,
-    dry_distance_cm: dryOk ? dryDistanceCm : null,
-
-    vbat_v: vbatV,
-    current_ma: currentMa,
-    battery_percentage: batteryPercentage,
-    network_type: networkType,
+  const derived = deriveCanonicalSensorFields(body, {
+    sensorDryDistanceCm: sensor.dry_distance_cm,
+    fallbackEnvDryDistanceCm,
+    mmPerTip,
   });
 
-  if (error) {
-    console.error("Supabase insert error:", error);
+  const usedEnvDryDistanceFallback =
+    sensor.dry_distance_cm == null && fallbackEnvDryDistanceCm != null;
+
+  if (usedEnvDryDistanceFallback) {
+    console.warn(
+      `[ingest] sensor ${deviceId} missing sensors.dry_distance_cm, using env fallback`
+    );
+  }
+
+  const canonicalPoint = buildCanonicalPoint({
+    ts,
+    deviceId,
+    derived,
+  });
+
+  const insertRow = buildInsertRow({
+    deviceId,
+    tsIso: new Date(ts).toISOString(),
+    derived,
+  });
+
+  const { error: insertError } = await supabaseAdmin
+    .from("sensor_readings")
+    .insert(insertRow);
+
+  if (insertError) {
+    console.error("[ingest] sensor_readings insert failed:", insertError);
     return bad("Database insert failed", 500);
   }
 
-  // Keep in-memory cache aligned with accepted DB writes
-  await appendPoint(point);
-
-  // Update event and alert layers without breaking ingestion on downstream failure
   try {
-    await processRainEventForReading(point);
-  } catch (err) {
-    console.error("[ingest] processRainEventForReading failed:", err);
+    await appendPoint(canonicalPoint);
+  } catch (error) {
+    console.error("[ingest] appendPoint failed:", error);
   }
 
   try {
-    await processAlertsForReading(point);
-  } catch (err) {
-    console.error("[ingest] processAlertsForReading failed:", err);
+    await processRainEventForReading(canonicalPoint);
+  } catch (error) {
+    console.error("[ingest] processRainEventForReading failed:", error);
+  }
+
+  try {
+    await processAlertsForReading(canonicalPoint);
+  } catch (error) {
+    console.error("[ingest] processAlertsForReading failed:", error);
   }
 
   return NextResponse.json({
     ok: true,
     computed: {
       deviceId,
-      usValid,
-      rawDistCm: rawDistOk ? rawDistCm : null,
-      rawWaterCm,
-      stableWaterCm,
-      dryDistanceCm: dryOk ? dryDistanceCm : null,
-      floodDepthCm,
-      rainRateMmHr60,
-      rainRateMmHr300,
-      batteryPercentage,
-      networkType,
+      ts,
+      rawDistCm: derived.rawDistCm,
+      rawWaterCm: derived.rawWaterCm,
+      stableWaterCm: derived.stableWaterCm,
+      usValid: derived.usValid,
+      acceptedForStable: derived.acceptedForStable,
+      overflow: derived.overflow,
+      dryDistanceCm: derived.dryDistanceCm,
+      floodDepthCm: derived.floodDepthCm,
+      rainTicksTotal: derived.rainTicksTotal,
+      tips60: derived.tips60,
+      tips300: derived.tips300,
+      rainRateMmHr60: derived.rainRateMmHr60,
+      rainRateMmHr300: derived.rainRateMmHr300,
+      rssiDbm: derived.rssiDbm,
+      vbatV: derived.vbatV,
+      currentMa: derived.currentMa,
+      batteryPercentage: derived.batteryPercentage,
+      networkType: derived.networkType,
+      usedEnvDryDistanceFallback,
     },
   });
 }

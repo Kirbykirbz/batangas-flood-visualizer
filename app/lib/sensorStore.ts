@@ -5,7 +5,7 @@ export type SensorPoint = {
   deviceId: string;
 
   // Ultrasonic
-  rawDistCm: number; // required (distance-to-surface)
+  rawDistCm?: number | null; // distance-to-surface
   rawWaterCm?: number | null;
   stableWaterCm?: number | null;
 
@@ -24,14 +24,12 @@ export type SensorPoint = {
   // Connectivity
   rssiDbm?: number | null;
 
-  
-
   vbatV?: number | null;
   currentMa?: number | null;
   batteryPercentage?: number | null;
   networkType?: string | null;
 
-  // Derived
+  // Derived / canonical-from-backend
   dryDistanceCm?: number | null;
   floodDepthCm?: number | null;
 };
