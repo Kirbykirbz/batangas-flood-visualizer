@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CircleMarker,
-  GeoJSON,
   MapContainer,
   Marker,
   Popup,
@@ -12,18 +11,25 @@ import {
   useMap,
 } from "react-leaflet";
 import L from "leaflet";
-import type { Layer, LeafletMouseEvent } from "leaflet";
-import type {
-  FeatureCollection,
-  Feature,
-  GeoJsonProperties,
-  MultiPolygon,
-  Point,
-  Polygon,
-} from "geojson";
-import { point as turfPoint } from "@turf/helpers";
-import distance from "@turf/distance";
+import type { FeatureCollection, Point } from "geojson";
 import "leaflet/dist/leaflet.css";
+
+import type { SensorPoint } from "@/app/lib/sensorStore";
+import {
+  extractBatteryPercentage,
+  extractFloodDepthCm,
+  extractRainMmHr,
+  extractRssiDbm,
+  extractTimestampMs,
+  isOverflow,
+} from "@/app/lib/sensorReading";
+import {
+  clamp01,
+  computeFloodRisk,
+  getRiskColor,
+  getStageLabel,
+  type ForecastHorizon,
+} from "@/app/lib/floodForecast";
 
 type SensorDevice = {
   id: string;
@@ -33,7 +39,6 @@ type SensorDevice = {
   zoneLabel: string;
 };
 
-type ForecastHorizon = "now" | "2h" | "4h" | "6h" | "8h";
 type BaseMapMode = "street" | "satellite";
 type MapLockTarget = "selectedSensor" | "user";
 
@@ -46,44 +51,12 @@ type FloodMapProps = {
   onSelectDevice: (deviceId: string) => void;
 };
 
-type LatestReading = {
-  ts?: number;
-  floodDepthCm?: number | null;
-  flood_depth_cm?: number | null;
-  rainRateMmHr60?: number | null;
-  rain_rate_mmh_60?: number | null;
-  rainRateMmHr300?: number | null;
-  rain_rate_mmh_300?: number | null;
-};
-
 type ApiDataPayload = {
-  latest: LatestReading | null;
-  recent: LatestReading[];
-  latestByDevice?: Record<string, LatestReading>;
+  latest: SensorPoint | null;
+  recent: SensorPoint[];
+  latestByDevice?: Record<string, SensorPoint>;
   serverTime: number;
 };
-
-type ZoneFeature = Feature<Polygon | MultiPolygon, GeoJsonProperties>;
-type ZoneFC = FeatureCollection<Polygon | MultiPolygon, GeoJsonProperties>;
-
-function clamp01(x: number) {
-  return Math.max(0, Math.min(1, x));
-}
-
-function toNumber(v: unknown): number | null {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string" && v.trim() !== "") {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  }
-  return null;
-}
-
-function getRiskColor(risk: number) {
-  if (risk <= 0.3) return "#22c55e";
-  if (risk <= 0.6) return "#f59e0b";
-  return "#dc2626";
-}
 
 function fmt(n: number | null, digits = 1) {
   if (n == null || !Number.isFinite(n)) return "—";
@@ -95,21 +68,6 @@ function fmtTime(tsMs: number | null) {
   const d = new Date(tsMs);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleString();
-}
-
-function forecastHours(h: ForecastHorizon): number {
-  switch (h) {
-    case "2h":
-      return 2;
-    case "4h":
-      return 4;
-    case "6h":
-      return 6;
-    case "8h":
-      return 8;
-    default:
-      return 0;
-  }
 }
 
 function MapFocusController({
@@ -147,6 +105,26 @@ function MapFocusController({
   return null;
 }
 
+function StagePanes() {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!map.getPane("stage-prev")) {
+      map.createPane("stage-prev");
+      const pane = map.getPane("stage-prev");
+      if (pane) pane.style.zIndex = "300";
+    }
+
+    if (!map.getPane("stage-current")) {
+      map.createPane("stage-current");
+      const pane = map.getPane("stage-current");
+      if (pane) pane.style.zIndex = "301";
+    }
+  }, [map]);
+
+  return null;
+}
+
 const defaultIcon = L.icon({
   iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
   iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
@@ -154,6 +132,7 @@ const defaultIcon = L.icon({
   iconSize: [25, 41],
   iconAnchor: [12, 41],
 });
+
 L.Marker.prototype.options.icon = defaultIcon;
 
 const selectedSensorIcon = L.divIcon({
@@ -198,8 +177,7 @@ export default function FixedFloodMapInner({
 }: FloodMapProps) {
   void geoJsonData;
 
-  const [zoneGeoJson, setZoneGeoJson] = useState<ZoneFC | null>(null);
-  const [latestByDevice, setLatestByDevice] = useState<Record<string, LatestReading>>({});
+  const [latestByDevice, setLatestByDevice] = useState<Record<string, SensorPoint>>({});
   const [rainMemory, setRainMemory] = useState(0);
   const [hudOpen, setHudOpen] = useState(true);
   const [legendOpen, setLegendOpen] = useState(false);
@@ -208,6 +186,11 @@ export default function FixedFloodMapInner({
   const [baseMapMode, setBaseMapMode] = useState<BaseMapMode>("street");
   const [mapLockTarget, setMapLockTarget] = useState<MapLockTarget>("selectedSensor");
 
+  const [displayStage, setDisplayStage] = useState<0 | 1 | 2 | 3>(0);
+  const [previousStage, setPreviousStage] = useState<0 | 1 | 2 | 3>(0);
+  const [previousStageOpacity, setPreviousStageOpacity] = useState(0);
+
+  const displayStageRef = useRef<0 | 1 | 2 | 3>(0);
   const lastUpdateRef = useRef<number | null>(null);
 
   const BATANGAS_BOUNDS: [[number, number], [number, number]] = [
@@ -215,18 +198,28 @@ export default function FixedFloodMapInner({
     [13.83, 121.15],
   ];
 
+  const RAIN_FULL_MMHR = 50;
+  const DEPTH_FULL_CM = 30;
+  const TAU_MIN = 60;
+  const DEPTH_DAMP_BASE = 0.2;
+  const DEPTH_ON_CM = 5;
+
   useEffect(() => {
     function updateMobile() {
       const mobile = window.innerWidth < 640;
       setIsMobile(mobile);
       setHudOpen(!mobile);
-      setLegendOpen(!mobile ? true : false);
+      setLegendOpen(!mobile);
     }
 
     updateMobile();
     window.addEventListener("resize", updateMobile);
     return () => window.removeEventListener("resize", updateMobile);
   }, []);
+
+  useEffect(() => {
+    displayStageRef.current = displayStage;
+  }, [displayStage]);
 
   const selectedDevice = useMemo(
     () => devices.find((d) => d.id === selectedDeviceId) ?? devices[0] ?? null,
@@ -245,39 +238,16 @@ export default function FixedFloodMapInner({
     return selectedSensorCenter;
   }, [mapLockTarget, userPosition, selectedSensorCenter]);
 
-  const RAIN_FULL_MMHR = 50;
-  const DEPTH_FULL_CM = 30;
-  const TAU_MIN = 60;
-  const DEPTH_DAMP_BASE = 0.2;
-  const DEPTH_ON_CM = 5;
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadZone() {
-      try {
-        const res = await fetch("/high_flood_zones_highonly.geojson", { cache: "no-store" });
-        if (!res.ok) throw new Error(`Zone GeoJSON load failed: ${res.status}`);
-        const data = (await res.json()) as ZoneFC;
-        if (!cancelled) setZoneGeoJson(data);
-      } catch (e) {
-        console.error("Failed to load flood zone GeoJSON:", e);
-      }
-    }
-
-    loadZone();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   useEffect(() => {
     let cancelled = false;
 
     async function loadLatest() {
       try {
-        const res = await fetch(`/api/data?limit=300&t=${Date.now()}`, { cache: "no-store" });
+        const res = await fetch(`/api/data?limit=300&t=${Date.now()}`, {
+          cache: "no-store",
+        });
         if (!res.ok) return;
+
         const json = (await res.json()) as ApiDataPayload;
         if (!cancelled) {
           setLatestByDevice(json.latestByDevice ?? {});
@@ -301,27 +271,10 @@ export default function FixedFloodMapInner({
     [latestByDevice, selectedDeviceId]
   );
 
-  const floodDepthCmCurrent = useMemo(() => {
-    if (!selectedLatest) return 0;
-    return toNumber(selectedLatest.floodDepthCm) ?? toNumber(selectedLatest.flood_depth_cm) ?? 0;
-  }, [selectedLatest]);
-
-  const rainMmHrCurrent = useMemo(() => {
-    if (!selectedLatest) return 0;
-    return (
-      toNumber(selectedLatest.rainRateMmHr300) ??
-      toNumber(selectedLatest.rain_rate_mmh_300) ??
-      toNumber(selectedLatest.rainRateMmHr60) ??
-      toNumber(selectedLatest.rain_rate_mmh_60) ??
-      0
-    );
-  }, [selectedLatest]);
-
-  const tsMs = useMemo(() => {
-    if (!selectedLatest) return null;
-    const t = toNumber(selectedLatest.ts);
-    return t != null ? Math.round(t) : null;
-  }, [selectedLatest]);
+  const floodDepthCmCurrent = useMemo(() => extractFloodDepthCm(selectedLatest), [selectedLatest]);
+  const rainMmHrCurrent = useMemo(() => extractRainMmHr(selectedLatest), [selectedLatest]);
+  const tsMs = useMemo(() => extractTimestampMs(selectedLatest), [selectedLatest]);
+  const selectedOverflow = useMemo(() => isOverflow(selectedLatest), [selectedLatest]);
 
   useEffect(() => {
     const now = Date.now();
@@ -330,110 +283,96 @@ export default function FixedFloodMapInner({
 
     const rainFactorCurrent = clamp01(rainMmHrCurrent / RAIN_FULL_MMHR);
 
-    if (last == null) {
-      setRainMemory(rainFactorCurrent);
-      return;
-    }
+    const rafId = window.requestAnimationFrame(() => {
+      setRainMemory((prev) => {
+        if (last == null) return rainFactorCurrent;
 
-    const dtMin = (now - last) / 60000;
-    const decay = Math.exp(-dtMin / TAU_MIN);
-    setRainMemory((prev) => Math.max(rainFactorCurrent, prev * decay));
+        const dtMin = (now - last) / 60000;
+        const decay = Math.exp(-dtMin / TAU_MIN);
+        return Math.max(rainFactorCurrent, prev * decay);
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
   }, [rainMmHrCurrent]);
 
-  const scenarioMetrics = useMemo(() => {
-    if (forecastHorizon === "now") {
-      return {
-        rainMmHr: rainMmHrCurrent,
-        floodDepthCm: floodDepthCmCurrent,
-      };
-    }
-
-    const hours = forecastHours(forecastHorizon);
-    const projectedRainMm = rainMmHrCurrent * hours;
-    const projectedDepth = Math.max(
+  const selectedRisk = useMemo(() => {
+    return computeFloodRisk({
+      forecastHorizon,
+      rainMmHrCurrent,
       floodDepthCmCurrent,
-      floodDepthCmCurrent + projectedRainMm * 0.35
-    );
-
-    return {
-      rainMmHr: rainMmHrCurrent,
-      floodDepthCm: projectedDepth,
-    };
-  }, [forecastHorizon, rainMmHrCurrent, floodDepthCmCurrent]);
-
-  const rainFactor = useMemo(
-    () => clamp01(scenarioMetrics.rainMmHr / RAIN_FULL_MMHR),
-    [scenarioMetrics.rainMmHr]
-  );
-
-  const depthFactor = useMemo(
-    () => clamp01(scenarioMetrics.floodDepthCm / DEPTH_FULL_CM),
-    [scenarioMetrics.floodDepthCm]
-  );
-
-  const effectiveDepthFactor = useMemo(() => {
-    const gate = DEPTH_DAMP_BASE + (1 - DEPTH_DAMP_BASE) * rainMemory;
-    return depthFactor * gate;
-  }, [depthFactor, rainMemory]);
-
-  const dynamicRisk = useMemo(() => {
-    return 1.0 * (0.4 * rainFactor + 0.6 * effectiveDepthFactor);
-  }, [rainFactor, effectiveDepthFactor]);
-
-  const riskColor = useMemo(() => getRiskColor(dynamicRisk), [dynamicRisk]);
-
-  const active = useMemo(() => {
-    return scenarioMetrics.rainMmHr > 0 || scenarioMetrics.floodDepthCm >= DEPTH_ON_CM;
-  }, [scenarioMetrics]);
-
-  const zoneStyle = useMemo(() => {
-    const fillOpacity = forecastHorizon === "now" ? 0.1 : 0.18;
-    const weight = forecastHorizon === "now" ? 4 : 5;
-
-    return {
-      color: riskColor,
-      weight,
-      opacity: 0.95,
-      fillColor: riskColor,
-      fillOpacity,
-    };
-  }, [riskColor, forecastHorizon]);
-
-  const susceptibilityOpacity = useMemo(() => {
-    if (!active) return 0.12;
-    if (forecastHorizon === "now") return 0.5;
-    return 0.68;
-  }, [active, forecastHorizon]);
-
-  const onEachZoneFeature = (_feature: ZoneFeature, layer: Layer) => {
-    layer.on("click", (e: LeafletMouseEvent) => {
-      if (!selectedDevice) return;
-
-      const clickLat = e.latlng.lat;
-      const clickLng = e.latlng.lng;
-
-      const a = turfPoint([selectedDevice.lng, selectedDevice.lat]);
-      const b = turfPoint([clickLng, clickLat]);
-      const km = distance(a, b, { units: "kilometers" });
-      const distMeters = km * 1000;
-
-      const html = `
-        <div style="min-width:260px">
-          <div style="font-weight:700">Flood zone overview</div>
-          <div style="margin-top:6px">
-            <div><b>Selected sensor</b>: ${selectedDevice.name}</div>
-            <div><b>Scenario</b>: ${forecastHorizon === "now" ? "Now" : `+${forecastHorizon}`}</div>
-            <div><b>Distance (clicked → sensor)</b>: ${distMeters.toFixed(1)} m</div>
-          </div>
-          <hr style="margin:10px 0"/>
-          <div style="color:#444">
-            Flood zone outline only appears when the selected sensor indicates active rain or flooding.
-          </div>
-        </div>
-      `;
-      layer.bindPopup(html).openPopup(e.latlng);
+      rainMemory,
+      rainFullMmHr: RAIN_FULL_MMHR,
+      depthFullCm: DEPTH_FULL_CM,
+      depthOnCm: DEPTH_ON_CM,
+      depthDampBase: DEPTH_DAMP_BASE,
+      overflow: selectedOverflow,
     });
-  };
+  }, [
+    forecastHorizon,
+    rainMmHrCurrent,
+    floodDepthCmCurrent,
+    rainMemory,
+    selectedOverflow,
+  ]);
+
+  const dynamicRisk = selectedRisk.dynamicRisk;
+  const active = selectedRisk.active;
+  const riskStage = selectedRisk.riskStage;
+  const riskColor = getRiskColor(dynamicRisk);
+  const scenarioMetrics = selectedRisk.scenario;
+  const effectiveDepthFactor = selectedRisk.effectiveDepthFactor;
+
+  useEffect(() => {
+    if (riskStage === displayStageRef.current) return;
+
+    const fadeDurationMs = 450;
+    let fadeIntervalId: number | null = null;
+    let cleanupTimeoutId: number | null = null;
+    let rafId: number | null = null;
+
+    setPreviousStage(displayStageRef.current);
+    setPreviousStageOpacity(displayStageRef.current === 0 ? 0 : 0.85);
+    setDisplayStage(riskStage);
+
+    rafId = window.requestAnimationFrame(() => {
+      const start = performance.now();
+
+      fadeIntervalId = window.setInterval(() => {
+        const elapsed = performance.now() - start;
+        const progress = Math.min(elapsed / fadeDurationMs, 1);
+        const nextOpacity = 0.85 * (1 - progress);
+        setPreviousStageOpacity(nextOpacity);
+
+        if (progress >= 1 && fadeIntervalId != null) {
+          window.clearInterval(fadeIntervalId);
+        }
+      }, 16);
+
+      cleanupTimeoutId = window.setTimeout(() => {
+        setPreviousStage(0);
+        setPreviousStageOpacity(0);
+      }, fadeDurationMs + 40);
+    });
+
+    return () => {
+      if (rafId != null) window.cancelAnimationFrame(rafId);
+      if (fadeIntervalId != null) window.clearInterval(fadeIntervalId);
+      if (cleanupTimeoutId != null) window.clearTimeout(cleanupTimeoutId);
+    };
+  }, [riskStage]);
+
+  const currentStageTileUrl = useMemo(() => {
+    if (displayStage === 0) return null;
+    return `/tiles/risk-stage-${displayStage}/{z}/{x}/{y}.png`;
+  }, [displayStage]);
+
+  const previousStageTileUrl = useMemo(() => {
+    if (previousStage === 0) return null;
+    return `/tiles/risk-stage-${previousStage}/{z}/{x}/{y}.png`;
+  }, [previousStage]);
 
   return (
     <div className="relative">
@@ -509,7 +448,7 @@ export default function FixedFloodMapInner({
             </button>
 
             {legendOpen && (
-              <div className="max-w-[210px] rounded-xl bg-white/95 px-3 py-3 shadow ring-1 ring-zinc-200">
+              <div className="max-w-[220px] rounded-xl bg-white/95 px-3 py-3 shadow ring-1 ring-zinc-200">
                 <div className="text-[11px] font-extrabold text-zinc-900">Map Legend</div>
                 <div className="mt-2 space-y-2 text-[11px] text-zinc-700">
                   <div className="flex items-center gap-2">
@@ -526,22 +465,22 @@ export default function FixedFloodMapInner({
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="inline-block h-3 w-8 rounded bg-green-500" />
-                    <span>Low risk</span>
+                    <span>Stage 1</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="inline-block h-3 w-8 rounded bg-orange-500" />
-                    <span>Moderate risk</span>
+                    <span>Stage 2</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="inline-block h-3 w-8 rounded bg-red-600" />
-                    <span>High risk</span>
+                    <span>Stage 3</span>
                   </div>
                 </div>
               </div>
             )}
           </div>
         ) : (
-          <div className="max-w-[240px] rounded-xl bg-white/95 px-4 py-3 shadow ring-1 ring-zinc-200">
+          <div className="max-w-[250px] rounded-xl bg-white/95 px-4 py-3 shadow ring-1 ring-zinc-200">
             <div className="text-xs font-extrabold text-zinc-900">Map Legend</div>
             <div className="mt-2 space-y-2 text-xs text-zinc-700">
               <div className="flex items-center gap-2">
@@ -558,15 +497,15 @@ export default function FixedFloodMapInner({
               </div>
               <div className="flex items-center gap-2">
                 <span className="inline-block h-3 w-8 rounded bg-green-500" />
-                <span>Low risk</span>
+                <span>Stage 1</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="inline-block h-3 w-8 rounded bg-orange-500" />
-                <span>Moderate risk</span>
+                <span>Stage 2</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="inline-block h-3 w-8 rounded bg-red-600" />
-                <span>High risk</span>
+                <span>Stage 3</span>
               </div>
             </div>
           </div>
@@ -576,7 +515,7 @@ export default function FixedFloodMapInner({
       {hudOpen && (
         <div
           className={`absolute z-[1000] rounded-xl bg-white/95 px-4 py-3 shadow ring-1 ring-zinc-200 ${
-            isMobile ? "left-3 right-3 top-32 max-w-none" : "right-3 top-14 max-w-[300px]"
+            isMobile ? "left-3 right-3 top-32 max-w-none" : "right-3 top-14 max-w-[360px]"
           }`}
         >
           <div className="text-xs font-semibold text-zinc-500">
@@ -589,16 +528,64 @@ export default function FixedFloodMapInner({
             {selectedDevice?.name ?? "—"} • Risk: {dynamicRisk.toFixed(3)}
           </div>
 
+          <div className="mt-1 text-xs text-zinc-700">
+            Stage: <span className="font-semibold">{getStageLabel(displayStage)}</span>
+          </div>
+
           <div className="mt-2 text-xs text-zinc-700">
             Rain: <span className="font-semibold">{fmt(scenarioMetrics.rainMmHr, 1)}</span> mm/hr
           </div>
 
           <div className="text-xs text-zinc-700">
-            Flood depth: <span className="font-semibold">{fmt(scenarioMetrics.floodDepthCm, 1)}</span> cm
+            Flood depth:{" "}
+            <span className="font-semibold">{fmt(scenarioMetrics.floodDepthCm, 1)}</span> cm
+          </div>
+
+          <div className="text-xs text-zinc-700">
+            Overflow: <span className="font-semibold">{selectedOverflow ? "Yes" : "No"}</span>
+          </div>
+
+          {forecastHorizon !== "now" && (
+            <>
+              <div className="mt-2 text-xs text-zinc-700">
+                Projected rain:{" "}
+                <span className="font-semibold">{fmt(scenarioMetrics.projectedRainMm, 1)}</span> mm
+              </div>
+              <div className="text-xs text-zinc-700">
+                Rain contribution:{" "}
+                <span className="font-semibold">
+                  {fmt(scenarioMetrics.rainfallContributionCm, 1)}
+                </span>{" "}
+                cm
+              </div>
+              <div className="text-xs text-zinc-700">
+                Drainage loss:{" "}
+                <span className="font-semibold">{fmt(scenarioMetrics.drainageLossCm, 1)}</span> cm
+              </div>
+            </>
+          )}
+
+          <div className="mt-2 text-xs text-zinc-700">
+            Risk color:{" "}
+            <span className="font-semibold" style={{ color: riskColor }}>
+              {riskColor}
+            </span>
           </div>
 
           <div className="mt-2 text-xs text-zinc-700">
             RainMem: {rainMemory.toFixed(3)} • EffDepth: {effectiveDepthFactor.toFixed(3)}
+          </div>
+
+          <div className="mt-2 text-xs text-zinc-700">
+            RSSI: <span className="font-semibold">{fmt(extractRssiDbm(selectedLatest), 0)}</span> dBm
+          </div>
+
+          <div className="text-xs text-zinc-700">
+            Battery:{" "}
+            <span className="font-semibold">
+              {fmt(extractBatteryPercentage(selectedLatest), 0)}
+            </span>
+            %
           </div>
 
           <div className="mt-2 text-[11px] text-zinc-500">
@@ -627,13 +614,15 @@ export default function FixedFloodMapInner({
           onFocusHandled={() => setFocusTarget(null)}
         />
 
+        <StagePanes />
+
         {baseMapMode === "street" ? (
-<TileLayer
-  url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-  attribution="&copy; OpenStreetMap contributors &copy; CARTO"
-  maxNativeZoom={20}
-  maxZoom={21}
-/>
+          <TileLayer
+            url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+            attribution="&copy; OpenStreetMap contributors &copy; CARTO"
+            maxNativeZoom={20}
+            maxZoom={21}
+          />
         ) : (
           <TileLayer
             url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
@@ -643,21 +632,27 @@ export default function FixedFloodMapInner({
           />
         )}
 
-        <TileLayer
-          url="/tiles/susceptibility/{z}/{x}/{y}.jpg"
-          opacity={susceptibilityOpacity}
-          zIndex={300}
-          minNativeZoom={12}
-          maxNativeZoom={17}
-          maxZoom={21}
-        />
+        {previousStageTileUrl && previousStageOpacity > 0.001 && (
+          <TileLayer
+            key={`prev-stage-${previousStage}`}
+            url={previousStageTileUrl}
+            opacity={previousStageOpacity}
+            pane="stage-prev"
+            minNativeZoom={12}
+            maxNativeZoom={18}
+            maxZoom={21}
+          />
+        )}
 
-        {active && zoneGeoJson && (
-          <GeoJSON
-            key={`zone-${riskColor}-${forecastHorizon}-${selectedDeviceId}`}
-            data={zoneGeoJson}
-            style={() => zoneStyle}
-            onEachFeature={onEachZoneFeature}
+        {currentStageTileUrl && (
+          <TileLayer
+            key={`current-stage-${displayStage}-${forecastHorizon}`}
+            url={currentStageTileUrl}
+            opacity={0.85}
+            pane="stage-current"
+            minNativeZoom={12}
+            maxNativeZoom={18}
+            maxZoom={21}
           />
         )}
 
@@ -690,38 +685,25 @@ export default function FixedFloodMapInner({
           const isSelected = device.id === selectedDeviceId;
           const deviceLatest = latestByDevice[device.id] ?? null;
 
-          const deviceRain =
-            toNumber(deviceLatest?.rainRateMmHr300) ??
-            toNumber(deviceLatest?.rain_rate_mmh_300) ??
-            toNumber(deviceLatest?.rainRateMmHr60) ??
-            toNumber(deviceLatest?.rain_rate_mmh_60) ??
-            0;
+          const deviceRain = extractRainMmHr(deviceLatest);
+          const deviceDepth = extractFloodDepthCm(deviceLatest);
+          const deviceTs = extractTimestampMs(deviceLatest);
+          const deviceOverflow = isOverflow(deviceLatest);
 
-          const deviceDepth =
-            toNumber(deviceLatest?.floodDepthCm) ??
-            toNumber(deviceLatest?.flood_depth_cm) ??
-            0;
+          const deviceRainFactorCurrent = clamp01(deviceRain / RAIN_FULL_MMHR);
+          const deviceRainMemory = clamp01(0.55 * deviceRainFactorCurrent + 0.45 * rainMemory);
 
-          const deviceTs = (() => {
-            const t = toNumber(deviceLatest?.ts);
-            return t != null ? Math.round(t) : null;
-          })();
-
-          const scenarioDeviceMetrics =
-            forecastHorizon === "now"
-              ? {
-                  rainMmHr: deviceRain,
-                  floodDepthCm: deviceDepth,
-                }
-              : (() => {
-                  const hours = forecastHours(forecastHorizon);
-                  const projectedRainMm = deviceRain * hours;
-                  const projectedDepth = Math.max(deviceDepth, deviceDepth + projectedRainMm * 0.35);
-                  return {
-                    rainMmHr: deviceRain,
-                    floodDepthCm: projectedDepth,
-                  };
-                })();
+          const deviceRisk = computeFloodRisk({
+            forecastHorizon,
+            rainMmHrCurrent: deviceRain,
+            floodDepthCmCurrent: deviceDepth,
+            rainMemory: deviceRainMemory,
+            rainFullMmHr: RAIN_FULL_MMHR,
+            depthFullCm: DEPTH_FULL_CM,
+            depthOnCm: DEPTH_ON_CM,
+            depthDampBase: DEPTH_DAMP_BASE,
+            overflow: deviceOverflow,
+          });
 
           return (
             <Marker
@@ -764,19 +746,26 @@ export default function FixedFloodMapInner({
                         <b>Scenario</b>: {forecastHorizon === "now" ? "Now" : `+${forecastHorizon}`}
                       </div>
                       <div>
-                        <b>Rain</b>: {fmt(scenarioDeviceMetrics.rainMmHr, 1)} mm/hr
+                        <b>Rain</b>: {fmt(deviceRisk.scenario.rainMmHr, 1)} mm/hr
                       </div>
                       <div>
-                        <b>Flood depth</b>: {fmt(scenarioDeviceMetrics.floodDepthCm, 1)} cm
+                        <b>Flood depth</b>: {fmt(deviceRisk.scenario.floodDepthCm, 1)} cm
+                      </div>
+                      <div>
+                        <b>Risk</b>: {deviceRisk.dynamicRisk.toFixed(3)}
+                      </div>
+                      <div>
+                        <b>Stage</b>: {getStageLabel(deviceRisk.riskStage)}
+                      </div>
+                      <div>
+                        <b>Overflow</b>: {deviceOverflow ? "Yes" : "No"}
                       </div>
                       <div>
                         <b>Updated</b>: {fmtTime(deviceTs)}
                       </div>
                     </>
                   ) : (
-                    <div style={{ color: "#666" }}>
-                      No recent telemetry for this sensor.
-                    </div>
+                    <div style={{ color: "#666" }}>No recent telemetry for this sensor.</div>
                   )}
 
                   {!isSelected && (

@@ -1,7 +1,6 @@
 // app/api/data/route.ts
 
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 import {
   getLatest,
   getLatestByAllDevices,
@@ -9,11 +8,11 @@ import {
   getRecent,
   type SensorPoint,
 } from "@/app/lib/sensorStore";
+import { supabaseAdmin } from "@/app/lib/supabaseAdmin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// 1. Updated Database Row Type to include Battery & LTE metrics
 type DbRow = {
   device_id: string | null;
   ts: string | null;
@@ -37,28 +36,12 @@ type DbRow = {
   dry_distance_cm: number | null;
   flood_depth_cm: number | null;
 
-  // --- NEW: INA219 Power & LTE Network Columns ---
   vbat_v: number | null;
   current_ma: number | null;
   battery_percentage: number | null;
   network_type: string | null;
 };
 
-const supabase = (() => {
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!url || !key) return null;
-
-  return createClient(url, key, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-  });
-})();
-
-// 2. Updated Mapper to pass new data to your React frontend
 function rowToSensorPoint(row: DbRow): SensorPoint | null {
   if (!row.ts) return null;
 
@@ -89,20 +72,18 @@ function rowToSensorPoint(row: DbRow): SensorPoint | null {
     dryDistanceCm: row.dry_distance_cm,
     floodDepthCm: row.flood_depth_cm,
 
-    // --- NEW: Map DB rows to SensorPoint properties ---
     vbatV: row.vbat_v,
     currentMa: row.current_ma,
     batteryPercentage: row.battery_percentage,
     networkType: row.network_type,
-  } as SensorPoint; 
-  // Note: Cast as SensorPoint to prevent TS errors if sensorStore isn't updated yet
+  };
 }
 
-async function getRecentFromSupabase(limit: number, deviceId?: string | null): Promise<SensorPoint[] | null> {
-  if (!supabase) return null;
-
-  // 3. Updated SELECT query for recent data
-  let query = supabase
+async function getRecentFromSupabase(
+  limit: number,
+  deviceId?: string | null
+): Promise<SensorPoint[] | null> {
+  let query = supabaseAdmin
     .from("sensor_readings")
     .select(
       `
@@ -126,7 +107,7 @@ async function getRecentFromSupabase(limit: number, deviceId?: string | null): P
       current_ma,
       battery_percentage,
       network_type
-    `
+      `
     )
     .order("ts", { ascending: false })
     .limit(limit);
@@ -142,19 +123,14 @@ async function getRecentFromSupabase(limit: number, deviceId?: string | null): P
     return null;
   }
 
-  const normalized = (data ?? [])
+  return (data ?? [])
     .map((row) => rowToSensorPoint(row as DbRow))
     .filter((x): x is SensorPoint => x !== null)
     .sort((a, b) => a.ts - b.ts);
-
-  return normalized;
 }
 
 async function getLatestByAllDevicesFromSupabase(): Promise<Record<string, SensorPoint> | null> {
-  if (!supabase) return null;
-
-  // 4. Updated SELECT query for latest data map
-  const { data, error } = await supabase
+  const { data, error } = await supabaseAdmin
     .from("sensor_readings")
     .select(
       `
@@ -178,7 +154,7 @@ async function getLatestByAllDevicesFromSupabase(): Promise<Record<string, Senso
       current_ma,
       battery_percentage,
       network_type
-    `
+      `
     )
     .order("ts", { ascending: false })
     .limit(1000);
@@ -213,14 +189,14 @@ export async function GET(req: Request) {
   const safeLimit =
     Number.isFinite(limit) ? Math.max(1, Math.min(Math.floor(limit), 5000)) : 300;
 
-  // Prefer Supabase
   const supabaseRecent = await getRecentFromSupabase(safeLimit, deviceId);
   const supabaseLatestByDevice = await getLatestByAllDevicesFromSupabase();
 
   if (supabaseRecent && supabaseLatestByDevice) {
     const latest =
       deviceId != null
-        ? (supabaseLatestByDevice[deviceId] ?? (supabaseRecent.length ? supabaseRecent[supabaseRecent.length - 1] : null))
+        ? supabaseLatestByDevice[deviceId] ??
+          (supabaseRecent.length ? supabaseRecent[supabaseRecent.length - 1] : null)
         : supabaseRecent.length
         ? supabaseRecent[supabaseRecent.length - 1]
         : null;

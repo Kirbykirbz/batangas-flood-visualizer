@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import type { FeatureCollection, Point } from "geojson";
+import type { ForecastHorizon } from "@/app/lib/floodForecast";
 
 export type SensorDevice = {
   id: string;
@@ -10,8 +11,6 @@ export type SensorDevice = {
   lng: number;
   zoneLabel: string;
 };
-
-export type ForecastHorizon = "now" | "2h" | "4h" | "6h" | "8h";
 
 export type FloodMapProps = {
   geoJsonData: FeatureCollection<Point, { z: number }>;

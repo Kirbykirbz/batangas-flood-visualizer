@@ -1,74 +1,28 @@
-// app/dashboard/sensor/page.tsx
 "use client";
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-
-type AnyPoint = Record<string, unknown>;
-type ForecastHorizon = "now" | "2h" | "4h" | "6h" | "8h";
-
-type SensorOption = {
-  id: string;
-  name: string;
-  lat: number;
-  lng: number;
-};
-
-const SENSORS: SensorOption[] = [
-  {
-    id: "esp32-1",
-    name: "Sensor 1",
-    lat: 13.735412678211276,
-    lng: 121.07296804092847,
-  },
-  {
-    id: "esp32-2",
-    name: "Sensor 2",
-    lat: 13.77057650804614,
-    lng: 121.06549040352245,
-  },
-  {
-    id: "esp32-3",
-    name: "Sensor 3",
-    lat: 13.751630736945645,
-    lng: 121.07199671425865,
-  },
-];
-
-type NormalizedPoint = {
-  tsMs: number | null;
-  deviceId: string | null;
-
-  rawDistCm: number | null;
-  rawWaterCm: number | null;
-  stableWaterCm: number | null;
-
-  usValid: boolean | null;
-  acceptedForStable: boolean | null;
-  overflow: boolean | null;
-
-  rainTicksTotal: number | null;
-  tips60: number | null;
-  tips300: number | null;
-  rainRateMmHr60: number | null;
-  rainRateMmHr300: number | null;
-
-  rssiDbm: number | null;
-
-  dryDistanceCm: number | null;
-  floodDepthCm: number | null;
-
-  rainMm60: number | null;
-  rainMm300: number | null;
-
-  hasTs: boolean;
-  isStale: boolean;
-};
+import {
+  clamp01,
+  computeFloodRisk,
+  getStageLabel,
+  type ForecastHorizon,
+} from "@/app/lib/floodForecast";
+import {
+  extractBatteryPercentage,
+  extractFloodDepthCm,
+  extractRainMmHr,
+  extractRssiDbm,
+  extractTimestampMs,
+  isOverflow,
+} from "@/app/lib/sensorReading";
+import { listSensors, type SensorRecord } from "@/app/lib/sensorsRepo";
+import type { SensorPoint } from "@/app/lib/sensorStore";
 
 type Payload = {
-  latest: AnyPoint | null;
-  recent: AnyPoint[];
-  latestByDevice?: Record<string, AnyPoint>;
+  latest: SensorPoint | null;
+  recent: SensorPoint[];
+  latestByDevice?: Record<string, SensorPoint>;
   serverTime: number;
 };
 
@@ -105,51 +59,46 @@ type WeatherApiResponse =
   | { ok: true; source: "live" | "cache"; data: WeatherPayload }
   | { ok: false; error: string; detail?: string };
 
-function forecastHours(h: ForecastHorizon): number {
-  switch (h) {
-    case "2h":
-      return 2;
-    case "4h":
-      return 4;
-    case "6h":
-      return 6;
-    case "8h":
-      return 8;
-    default:
-      return 0;
+type NormalizedPoint = {
+  tsMs: number | null;
+  deviceId: string | null;
+  rawDistCm: number | null;
+  rawWaterCm: number | null;
+  stableWaterCm: number | null;
+  usValid: boolean | null;
+  acceptedForStable: boolean | null;
+  overflow: boolean | null;
+  rainTicksTotal: number | null;
+  tips60: number | null;
+  tips300: number | null;
+  rainRateMmHr60: number | null;
+  rainRateMmHr300: number | null;
+  rssiDbm: number | null;
+  dryDistanceCm: number | null;
+  floodDepthCm: number | null;
+  batteryPercentage: number | null;
+  networkType: string | null;
+  rainMm60: number | null;
+  rainMm300: number | null;
+  hasTs: boolean;
+  isStale: boolean;
+};
+
+function classifyFloodCm(depthCm: number, overflow = false): FloodStatus {
+  if (overflow || depthCm >= 30) {
+    return { label: "DANGER", note: "High flood depth or overflow detected" };
   }
+  if (depthCm >= 20) {
+    return { label: "WARNING", note: "Rising flood depth (≥ 20 cm)" };
+  }
+  if (depthCm >= 10) {
+    return { label: "WATCH", note: "Flood watch level (≥ 10 cm)" };
+  }
+  return { label: "NORMAL", note: "Normal flood depth" };
 }
 
-function classifyFloodFt(waterFt: number): FloodStatus {
-  if (waterFt >= 3) return { label: "DANGER", note: "High water level (≥ 3 ft)" };
-  if (waterFt >= 2) return { label: "WARNING", note: "Rising water level (≥ 2 ft)" };
-  if (waterFt >= 1) return { label: "WATCH", note: "Water level watch (≥ 1 ft)" };
-  return { label: "NORMAL", note: "Normal water level" };
-}
-
-function classifyRainMmHr(
-  mmHr: number,
-  opts?: { tips?: number | null; windowLabel?: "60s" | "5m" }
-): RainStatus {
+function classifyRainMmHr(mmHr: number): RainStatus {
   const x = Math.max(0, mmHr);
-  const tips = Math.max(0, opts?.tips ?? 0);
-
-  if (tips <= 1) {
-    if (x < 0.5) {
-      return {
-        label: "NONE",
-        note: `< 0.5 mm/hr (low sample${opts?.windowLabel ? `, ${opts.windowLabel}` : ""})`,
-        mmHr: x,
-      };
-    }
-    return {
-      label: "LIGHT",
-      note: `Low sample (${tips} tip${tips === 1 ? "" : "s"}${
-        opts?.windowLabel ? `, ${opts.windowLabel}` : ""
-      })`,
-      mmHr: x,
-    };
-  }
 
   if (x < 0.5) return { label: "NONE", note: "< 0.5 mm/hr", mmHr: x };
   if (x < 2.5) return { label: "LIGHT", note: "0.5–2.5 mm/hr", mmHr: x };
@@ -164,33 +113,6 @@ function toNumber(v: unknown): number | null {
   if (typeof v === "string" && v.trim() !== "") {
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
-  }
-  return null;
-}
-
-function toBool(v: unknown): boolean | null {
-  if (typeof v === "boolean") return v;
-  if (typeof v === "string") {
-    if (v.toLowerCase() === "true") return true;
-    if (v.toLowerCase() === "false") return false;
-  }
-  if (typeof v === "number") {
-    if (v === 1) return true;
-    if (v === 0) return false;
-  }
-  return null;
-}
-
-function toTsMs(v: unknown): number | null {
-  const n = toNumber(v);
-  if (n != null) {
-    if (n > 1e12) return Math.round(n);
-    if (n > 1e9) return Math.round(n * 1000);
-    return null;
-  }
-  if (typeof v === "string") {
-    const d = new Date(v);
-    if (!Number.isNaN(d.getTime())) return d.getTime();
   }
   return null;
 }
@@ -255,113 +177,130 @@ function pillClasses(tone: "ok" | "warn" | "bad" | "neutral") {
   }
 }
 
-function normalizePoint(p: AnyPoint, nowMs: number): NormalizedPoint {
-  const tsMs = toTsMs(p.ts) ?? toTsMs(p.created_at) ?? toTsMs(p.time) ?? null;
-  const deviceId =
-    (typeof p.deviceId === "string" ? p.deviceId : null) ??
-    (typeof p.device_id === "string" ? p.device_id : null);
+function riskToneClasses(risk: number) {
+  if (risk <= 0.3) return "text-emerald-700";
+  if (risk <= 0.6) return "text-amber-700";
+  return "text-red-700";
+}
 
-  const rawDistRaw = toNumber(p.rawDistCm) ?? toNumber(p.raw_dist_cm) ?? null;
-  const rawDistCm = rawDistRaw != null && rawDistRaw > 0 ? rawDistRaw : null;
+function normalizePoint(p: SensorPoint | null, nowMs: number): NormalizedPoint | null {
+  if (!p) return null;
 
-  const rawWaterCm =
-    toNumber(p.rawWaterCm) ??
-    toNumber(p.raw_water_cm) ??
-    toNumber(p.waterCm) ??
-    toNumber(p.water_cm) ??
-    null;
-
-  const stableWaterCm =
-    toNumber(p.stableWaterCm) ?? toNumber(p.stable_water_cm) ?? rawWaterCm;
-
-  const usValid = toBool(p.usValid) ?? toBool(p.us_valid) ?? null;
-  const acceptedForStable =
-    toBool(p.acceptedForStable) ?? toBool(p.accepted_for_stable) ?? null;
-  const overflow = toBool(p.overflow) ?? null;
-
-  const rainTicksTotal =
-    toNumber(p.rainTicksTotal) ?? toNumber(p.rain_ticks_total) ?? null;
-  const tips60 = toNumber(p.tips60) ?? toNumber(p.tips_60) ?? null;
-  const tips300 = toNumber(p.tips300) ?? toNumber(p.tips_300) ?? null;
-
-  const rainRateMmHr60 =
-    toNumber(p.rainRateMmHr60) ?? toNumber(p.rain_rate_mmh_60) ?? null;
-  const rainRateMmHr300 =
-    toNumber(p.rainRateMmHr300) ?? toNumber(p.rain_rate_mmh_300) ?? null;
-
-  const rssiDbm = toNumber(p.rssiDbm) ?? toNumber(p.rssi_dbm) ?? null;
-
-  const dryDistanceCm =
-    toNumber(p.dryDistanceCm) ?? toNumber(p.dry_distance_cm) ?? null;
-  const floodDepthCm =
-    toNumber(p.floodDepthCm) ?? toNumber(p.flood_depth_cm) ?? null;
-
-  const MM_PER_TIP = 0.327;
-  const rainMm60 = tips60 != null ? tips60 * MM_PER_TIP : null;
-  const rainMm300 = tips300 != null ? tips300 * MM_PER_TIP : null;
-
+  const tsMs = extractTimestampMs(p);
   const STALE_MS = 15_000;
   const hasTs = tsMs != null;
   const isStale = hasTs ? nowMs - tsMs > STALE_MS : true;
 
+  const rainRateMmHr60 = toNumber(p.rainRateMmHr60);
+  const rainRateMmHr300 = toNumber(p.rainRateMmHr300);
+  const tips60 = toNumber(p.tips60);
+  const tips300 = toNumber(p.tips300);
+
   return {
     tsMs,
-    deviceId,
-
-    rawDistCm,
-    rawWaterCm: rawWaterCm != null && rawWaterCm >= 0 ? rawWaterCm : null,
-    stableWaterCm: stableWaterCm != null && stableWaterCm >= 0 ? stableWaterCm : null,
-
-    usValid,
-    acceptedForStable,
-    overflow,
-
-    rainTicksTotal,
+    deviceId: p.deviceId ?? null,
+    rawDistCm: toNumber(p.rawDistCm),
+    rawWaterCm: toNumber(p.rawWaterCm),
+    stableWaterCm: toNumber(p.stableWaterCm),
+    usValid: p.usValid ?? null,
+    acceptedForStable: p.acceptedForStable ?? null,
+    overflow: p.overflow ?? null,
+    rainTicksTotal: toNumber(p.rainTicksTotal),
     tips60,
     tips300,
     rainRateMmHr60,
     rainRateMmHr300,
-
-    rssiDbm,
-
-    dryDistanceCm,
-    floodDepthCm,
-
-    rainMm60,
-    rainMm300,
-
+    rssiDbm: toNumber(p.rssiDbm),
+    dryDistanceCm: toNumber(p.dryDistanceCm),
+    floodDepthCm: extractFloodDepthCm(p),
+    batteryPercentage: toNumber(p.batteryPercentage),
+    networkType: typeof p.networkType === "string" ? p.networkType : null,
+    rainMm60: tips60 != null ? tips60 * 0.327 : null,
+    rainMm300: tips300 != null ? tips300 * 0.327 : null,
     hasTs,
     isStale,
   };
 }
 
 export default function SensorDashboardPage() {
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("esp32-1");
+  const [sensorRecords, setSensorRecords] = useState<SensorRecord[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
   const [forecastHorizon, setForecastHorizon] = useState<ForecastHorizon>("now");
+
+  const [latestByDevice, setLatestByDevice] = useState<Record<string, SensorPoint>>({});
+  const [recentRaw, setRecentRaw] = useState<SensorPoint[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [sensorLoading, setSensorLoading] = useState(true);
+  const [error, setError] = useState<string>("");
 
   const [weather, setWeather] = useState<WeatherPayload | null>(null);
   const [weatherError, setWeatherError] = useState<string>("");
 
-  const POLL_LATEST_MS = 1000;
-  const POLL_LOGS_MS = 5000;
-
-  const CM_PER_FT = 30.48;
-  const MM_PER_TIP = 0.327;
-  const DEPTH_ON_CM = 5;
-
-  const [latestRaw, setLatestRaw] = useState<AnyPoint | null>(null);
-  const [recentRaw, setRecentRaw] = useState<AnyPoint[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string>("");
   const [lastFetchAt, setLastFetchAt] = useState<number>(0);
   const [showLogs, setShowLogs] = useState(false);
+
+  const [rainMemory, setRainMemory] = useState(0);
+  const lastRainUpdateRef = useRef<number | null>(null);
 
   const inFlightLatestRef = useRef(false);
   const inFlightLogsRef = useRef(false);
 
+  const POLL_LATEST_MS = 1000;
+  const POLL_LOGS_MS = 5000;
+  const WX_POLL_MS = 60_000;
+
+  const DEPTH_ON_CM = 5;
+  const RAIN_FULL_MMHR = 50;
+  const DEPTH_FULL_CM = 30;
+  const TAU_MIN = 60;
+  const DEPTH_DAMP_BASE = 0.2;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSensorsFromDb() {
+      try {
+        setSensorLoading(true);
+        const rows = await listSensors();
+        if (!cancelled) {
+          const activeRows = rows.filter((s) => s.is_active);
+          setSensorRecords(activeRows);
+
+          setSelectedDeviceId((prev) => {
+            if (prev && activeRows.some((s) => s.id === prev)) return prev;
+            return activeRows[0]?.id ?? "";
+          });
+        }
+      } catch (err) {
+        console.error("Failed to load sensors:", err);
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load sensors.");
+        }
+      } finally {
+        if (!cancelled) setSensorLoading(false);
+      }
+    }
+
+    loadSensorsFromDb();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const sensors = useMemo(() => {
+    return sensorRecords.map((s) => ({
+      id: s.id,
+      name: s.name,
+      lat: s.lat,
+      lng: s.lng,
+      zoneLabel: s.zone_label ?? "—",
+      dryDistanceCm: s.dry_distance_cm ?? null,
+    }));
+  }, [sensorRecords]);
+
   const selectedSensor = useMemo(
-    () => SENSORS.find((s) => s.id === selectedDeviceId) ?? SENSORS[0],
-    [selectedDeviceId]
+    () => sensors.find((s) => s.id === selectedDeviceId) ?? sensors[0] ?? null,
+    [sensors, selectedDeviceId]
   );
 
   function downloadFile(url: string) {
@@ -374,6 +313,7 @@ export default function SensorDashboardPage() {
   }
 
   function handleDownloadCsv() {
+    if (!selectedDeviceId) return;
     const url = `/api/report/export?deviceId=${encodeURIComponent(
       selectedDeviceId
     )}&format=csv&limit=5000`;
@@ -381,6 +321,7 @@ export default function SensorDashboardPage() {
   }
 
   function handleDownloadJson() {
+    if (!selectedDeviceId) return;
     const url = `/api/report/export?deviceId=${encodeURIComponent(
       selectedDeviceId
     )}&format=json&limit=5000`;
@@ -388,7 +329,7 @@ export default function SensorDashboardPage() {
   }
 
   async function loadLatestOnly() {
-    if (inFlightLatestRef.current) return;
+    if (!selectedDeviceId || inFlightLatestRef.current) return;
     inFlightLatestRef.current = true;
 
     try {
@@ -403,21 +344,10 @@ export default function SensorDashboardPage() {
 
       const json: Payload = await res.json();
 
-      const selectedLatest =
-        json.latestByDevice?.[selectedDeviceId] ??
-        json.recent.find((p) => {
-          const id =
-            (typeof p.deviceId === "string" ? p.deviceId : null) ??
-            (typeof p.device_id === "string" ? p.device_id : null);
-          return id === selectedDeviceId;
-        }) ??
-        json.latest ??
-        null;
-
-      setLatestRaw(selectedLatest);
+      setLatestByDevice(json.latestByDevice ?? {});
       setRecentRaw(Array.isArray(json.recent) ? json.recent : []);
       setError("");
-      setLastFetchAt(Date.now());
+      setLastFetchAt(json.serverTime ?? Date.now());
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Unknown error";
       setError(msg);
@@ -428,14 +358,16 @@ export default function SensorDashboardPage() {
   }
 
   async function loadLogs() {
-    if (inFlightLogsRef.current) return;
+    if (!selectedDeviceId || inFlightLogsRef.current) return;
     inFlightLogsRef.current = true;
 
     try {
       const res = await fetch(`/api/data?limit=600&t=${Date.now()}`, {
         cache: "no-store",
       });
+
       if (!res.ok) return;
+
       const json: Payload = await res.json();
       setRecentRaw(Array.isArray(json.recent) ? json.recent : []);
     } catch (e) {
@@ -446,61 +378,28 @@ export default function SensorDashboardPage() {
   }
 
   useEffect(() => {
+    if (!selectedDeviceId) return;
+
     loadLatestOnly();
-    const id = setInterval(loadLatestOnly, POLL_LATEST_MS);
+    const id = window.setInterval(loadLatestOnly, POLL_LATEST_MS);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDeviceId]);
 
   useEffect(() => {
-    if (!showLogs) return;
+    if (!showLogs || !selectedDeviceId) return;
+
     loadLogs();
-    const id = setInterval(loadLogs, POLL_LOGS_MS);
+    const id = window.setInterval(loadLogs, POLL_LOGS_MS);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showLogs, selectedDeviceId]);
 
-  const nowMs = Date.now();
-
-  const latest = useMemo(() => {
-    return latestRaw ? normalizePoint(latestRaw, nowMs) : null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [latestRaw, lastFetchAt]);
-
-  const recent = useMemo(() => {
-    if (!showLogs) return [] as NormalizedPoint[];
-
-    const filtered = (recentRaw ?? []).filter((p) => {
-      const id =
-        (typeof p.deviceId === "string" ? p.deviceId : null) ??
-        (typeof p.device_id === "string" ? p.device_id : null);
-      return id === selectedDeviceId;
-    });
-
-    const arr = filtered.map((p) => normalizePoint(p, nowMs));
-    const withTs = arr.filter((x) => x.tsMs != null) as Array<
-      NormalizedPoint & { tsMs: number }
-    >;
-
-    if (withTs.length >= 2) {
-      withTs.sort((a, b) => a.tsMs - b.tsMs);
-      return withTs;
-    }
-
-    return arr;
-  }, [recentRaw, showLogs, nowMs, selectedDeviceId]);
-
-  const WX_POLL_MS = 60_000;
-  const WX_LAT = selectedSensor.lat;
-  const WX_LNG = selectedSensor.lng;
-
   async function loadWeather() {
+    if (!selectedSensor) return;
+
     try {
       const res = await fetch(
-        `/api/weather?lat=${WX_LAT}&lng=${WX_LNG}&t=${Date.now()}`,
-        {
-          cache: "no-store",
-        }
+        `/api/weather?lat=${selectedSensor.lat}&lng=${selectedSensor.lng}&t=${Date.now()}`,
+        { cache: "no-store" }
       );
       const json = (await res.json()) as WeatherApiResponse;
 
@@ -520,52 +419,116 @@ export default function SensorDashboardPage() {
   }
 
   useEffect(() => {
+    if (!selectedSensor) return;
     loadWeather();
     const id = setInterval(loadWeather, WX_POLL_MS);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDeviceId]);
+  }, [selectedSensor?.id]);
 
-  const stableWaterFt = useMemo(() => {
-    if (!latest?.stableWaterCm && latest?.stableWaterCm !== 0) return null;
-    return (latest.stableWaterCm ?? 0) / CM_PER_FT;
-  }, [latest]);
+  const nowMs = lastFetchAt || Date.now();
 
-  const flood = classifyFloodFt(stableWaterFt ?? 0);
+  const selectedLatestRaw = useMemo(
+    () => (selectedDeviceId ? latestByDevice[selectedDeviceId] ?? null : null),
+    [latestByDevice, selectedDeviceId]
+  );
+
+  const latest = useMemo(() => {
+    return normalizePoint(selectedLatestRaw, nowMs);
+  }, [selectedLatestRaw, nowMs]);
+
+  const recent = useMemo(() => {
+    if (!showLogs || !selectedDeviceId) return [] as NormalizedPoint[];
+
+    const filtered = recentRaw.filter((p) => p.deviceId === selectedDeviceId);
+    return filtered
+      .map((p) => normalizePoint(p, nowMs))
+      .filter((p): p is NormalizedPoint => p != null);
+  }, [recentRaw, selectedDeviceId, showLogs, nowMs]);
+
+  const floodDepthCmCurrent = useMemo(() => extractFloodDepthCm(selectedLatestRaw), [selectedLatestRaw]);
+  const rainMmHrCurrent = useMemo(() => extractRainMmHr(selectedLatestRaw), [selectedLatestRaw]);
+  const latestOverflow = useMemo(() => isOverflow(selectedLatestRaw), [selectedLatestRaw]);
+
+  useEffect(() => {
+    const now = Date.now();
+    const last = lastRainUpdateRef.current;
+    lastRainUpdateRef.current = now;
+
+    const rainFactorCurrent = clamp01(rainMmHrCurrent / RAIN_FULL_MMHR);
+
+    const rafId = window.requestAnimationFrame(() => {
+      setRainMemory((prev) => {
+        if (last == null) {
+          return rainFactorCurrent;
+        }
+
+        const dtMin = (now - last) / 60000;
+        const decay = Math.exp(-dtMin / TAU_MIN);
+
+        return Math.max(rainFactorCurrent, prev * decay);
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [rainMmHrCurrent]);
+
+  // EXACT SAME CORE COMPUTATION PATH AS MAP:
+  const currentRisk = useMemo(() => {
+    return computeFloodRisk({
+      forecastHorizon: "now",
+      rainMmHrCurrent,
+      floodDepthCmCurrent,
+      rainMemory,
+      rainFullMmHr: RAIN_FULL_MMHR,
+      depthFullCm: DEPTH_FULL_CM,
+      depthOnCm: DEPTH_ON_CM,
+      depthDampBase: DEPTH_DAMP_BASE,
+      overflow: latestOverflow,
+    });
+  }, [
+    rainMmHrCurrent,
+    floodDepthCmCurrent,
+    rainMemory,
+    latestOverflow,
+  ]);
+
+  const scenarioRisk = useMemo(() => {
+    return computeFloodRisk({
+      forecastHorizon,
+      rainMmHrCurrent,
+      floodDepthCmCurrent,
+      rainMemory,
+      rainFullMmHr: RAIN_FULL_MMHR,
+      depthFullCm: DEPTH_FULL_CM,
+      depthOnCm: DEPTH_ON_CM,
+      depthDampBase: DEPTH_DAMP_BASE,
+      overflow: latestOverflow,
+    });
+  }, [
+    forecastHorizon,
+    rainMmHrCurrent,
+    floodDepthCmCurrent,
+    rainMemory,
+    latestOverflow,
+  ]);
+
+  const flood = useMemo(() => {
+    return classifyFloodCm(scenarioRisk.scenario.floodDepthCm, latestOverflow);
+  }, [scenarioRisk.scenario.floodDepthCm, latestOverflow]);
 
   const rainStatus = useMemo(() => {
-    const has300 = latest?.rainRateMmHr300 != null;
-    const mmHr = has300 ? (latest!.rainRateMmHr300 as number) : latest?.rainRateMmHr60 ?? 0;
-    const tips = has300 ? latest?.tips300 ?? 0 : latest?.tips60 ?? 0;
-    const windowLabel = has300 ? "5m" : "60s";
-    return classifyRainMmHr(mmHr, { tips, windowLabel });
-  }, [latest]);
+    return classifyRainMmHr(rainMmHrCurrent);
+  }, [rainMmHrCurrent]);
 
-  const forecastScenario = useMemo(() => {
-    const currentRain = latest?.rainRateMmHr300 ?? latest?.rainRateMmHr60 ?? 0;
-    const currentDepth = latest?.floodDepthCm ?? 0;
+  const forecastDeltaDepth = useMemo(() => {
+    return scenarioRisk.scenario.floodDepthCm - currentRisk.scenario.floodDepthCm;
+  }, [scenarioRisk.scenario.floodDepthCm, currentRisk.scenario.floodDepthCm]);
 
-    if (forecastHorizon === "now") {
-      return {
-        rainMmHr: currentRain,
-        floodDepthCm: currentDepth,
-      };
-    }
-
-    const hours = forecastHours(forecastHorizon);
-    const projectedRainMm = currentRain * hours;
-    const projectedDepth = Math.max(currentDepth, currentDepth + projectedRainMm * 0.35);
-
-    return {
-      rainMmHr: currentRain,
-      floodDepthCm: projectedDepth,
-    };
-  }, [latest, forecastHorizon]);
-
-  const forecastRainStatus = useMemo(() => {
-    const tips = latest?.tips300 ?? latest?.tips60 ?? 0;
-    return classifyRainMmHr(forecastScenario.rainMmHr, { tips, windowLabel: "5m" });
-  }, [forecastScenario, latest]);
+  const forecastDeltaRisk = useMemo(() => {
+    return scenarioRisk.dynamicRisk - currentRisk.dynamicRisk;
+  }, [scenarioRisk.dynamicRisk, currentRisk.dynamicRisk]);
 
   const dataQuality = useMemo(() => {
     if (!latest) return { label: "NO DATA", tone: "bad" as const, note: "No latest reading" };
@@ -583,18 +546,27 @@ export default function SensorDashboardPage() {
     }
 
     const tipsOn = (latest.tips60 ?? 0) > 0;
-    const depthOn = forecastScenario.floodDepthCm >= DEPTH_ON_CM;
+    const depthOn = scenarioRisk.scenario.floodDepthCm >= DEPTH_ON_CM;
+    const overflowOn = latestOverflow;
 
-    if (tipsOn && depthOn) return { on: true, reason: "Raining now (tips60 > 0) + depth above threshold" };
-    if (tipsOn) return { on: true, reason: "Raining now (tips60 > 0)" };
+    if (overflowOn) {
+      return { on: true, reason: "Overflow detected" };
+    }
+    if (tipsOn && depthOn) {
+      return { on: true, reason: "Raining now (tips60 > 0) + depth above threshold" };
+    }
+    if (tipsOn) {
+      return { on: true, reason: "Raining now (tips60 > 0)" };
+    }
     if (depthOn) {
       return {
         on: true,
-        reason: `Flood depth ≥ ${DEPTH_ON_CM} cm (post-rain persistence / forecast)`,
+        reason: `Flood depth ≥ ${DEPTH_ON_CM} cm (current or forecast)`,
       };
     }
+
     return { on: false, reason: "No rain tips and flood depth below threshold" };
-  }, [latest, forecastScenario]);
+  }, [latest, scenarioRisk.scenario.floodDepthCm, latestOverflow]);
 
   const secondsSinceFetch = lastFetchAt
     ? Math.floor((Date.now() - lastFetchAt) / 1000)
@@ -638,6 +610,13 @@ export default function SensorDashboardPage() {
       pills.push({ text: "Signal —", tone: "neutral" });
     }
 
+    if (latest.batteryPercentage != null) {
+      pills.push({
+        text: `Battery ${fmtInt(latest.batteryPercentage)}%`,
+        tone: latest.batteryPercentage < 20 ? "warn" : "neutral",
+      });
+    }
+
     return pills;
   }, [latest, activation.on]);
 
@@ -645,44 +624,46 @@ export default function SensorDashboardPage() {
     const tips60 = latest?.tips60 ?? null;
     const tips300 = latest?.tips300 ?? null;
     const rainMm300 = latest?.rainMm300 ?? null;
-
-    const depth = forecastScenario.floodDepthCm ?? null;
-    const dryDist = latest?.dryDistanceCm ?? null;
+    const currentDepth = currentRisk.scenario.floodDepthCm ?? null;
+    const scenarioDepth = scenarioRisk.scenario.floodDepthCm ?? null;
+    const dryDist = latest?.dryDistanceCm ?? selectedSensor?.dryDistanceCm ?? null;
     const rawDist = latest?.rawDistCm ?? null;
-
     const fresh = latest ? !latest.isStale : false;
 
     return {
       freshness: fresh ? "Live telemetry received." : "Telemetry stale/offline (no recent update).",
-      rain: `Rain intensity: ${forecastRainStatus.label} (${fmt(
-        forecastRainStatus.mmHr,
+      rain: `Current rain intensity: ${rainStatus.label} (${fmt(
+        rainStatus.mmHr,
         1
       )} mm/hr). Tips60=${tips60 ?? "—"}, Tips300=${tips300 ?? "—"}, Rain300=${
         rainMm300 != null ? fmt(rainMm300, 2) : "—"
       } mm.`,
-      depth: `Flood depth (current / scenario): ${
-        depth != null ? fmt(depth, 1) : "—"
+      depth: `Current depth: ${currentDepth != null ? fmt(currentDepth, 1) : "—"} cm. Scenario depth: ${
+        scenarioDepth != null ? fmt(scenarioDepth, 1) : "—"
       } cm. Dry distance=${dryDist != null ? fmt(dryDist, 1) : "—"} cm, Raw distance=${
         rawDist != null ? fmt(rawDist, 1) : "—"
       } cm.`,
       activation: `Map activation: ${activation.on ? "ON" : "OFF"} — ${activation.reason}.`,
       waterStatus: `Water-level status: ${flood.label} — ${flood.note}.`,
+      risk: `Current risk: ${currentRisk.dynamicRisk.toFixed(3)} • Scenario risk: ${scenarioRisk.dynamicRisk.toFixed(
+        3
+      )} • Scenario stage: ${getStageLabel(scenarioRisk.riskStage)}.`,
     };
-  }, [latest, activation, forecastRainStatus, flood, forecastScenario]);
+  }, [latest, activation, rainStatus, flood, currentRisk, scenarioRisk, selectedSensor]);
 
-  if (loading) {
+  if (sensorLoading || loading) {
     return (
-      <div className="mx-auto max-w-6xl px-4 py-8">
+      <div className="mx-auto max-w-7xl px-4 py-8">
         <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
-          <div className="text-sm text-zinc-500">Loading live data…</div>
+          <div className="text-sm text-zinc-500">Loading sensor dashboard…</div>
         </div>
       </div>
     );
   }
 
-  if (error) {
+  if (error && sensors.length === 0) {
     return (
-      <div className="mx-auto max-w-6xl px-4 py-8">
+      <div className="mx-auto max-w-7xl px-4 py-8">
         <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
           <div className="text-base font-extrabold">Error</div>
           <div className="mt-2 text-sm text-zinc-700">{error}</div>
@@ -698,12 +679,32 @@ export default function SensorDashboardPage() {
     );
   }
 
+  if (!selectedSensor) {
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-8">
+        <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
+          <div className="text-base font-extrabold text-zinc-900">No Active Sensors</div>
+          <div className="mt-2 text-sm text-zinc-700">
+            No active sensors were found in the database.
+          </div>
+          <div className="mt-4">
+            <Link
+              href="/dashboard/admin/sensors"
+              className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold shadow-sm hover:bg-zinc-50"
+            >
+              Open Admin Sensors
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const stableCm = latest?.stableWaterCm ?? null;
-  const floodDepthCm = forecastScenario.floodDepthCm ?? null;
 
   return (
     <div className="min-h-screen bg-zinc-50">
-      <div className="mx-auto max-w-6xl px-4 py-8">
+      <div className="mx-auto max-w-7xl px-4 py-8">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <Link
             href="/dashboard"
@@ -720,9 +721,9 @@ export default function SensorDashboardPage() {
                 onChange={(e) => setSelectedDeviceId(e.target.value)}
                 className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-900 shadow-sm"
               >
-                {SENSORS.map((sensor) => (
+                {sensors.map((sensor) => (
                   <option key={sensor.id} value={sensor.id}>
-                    {sensor.name}
+                    {sensor.name} — {sensor.zoneLabel}
                   </option>
                 ))}
               </select>
@@ -746,11 +747,87 @@ export default function SensorDashboardPage() {
         </div>
 
         <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                Flood Monitoring
+              </div>
+              <h1 className="mt-1 text-2xl font-extrabold tracking-tight text-zinc-900">
+                Sensor Dashboard — {selectedSensor.name}
+              </h1>
+              <div className="mt-2 text-sm text-zinc-600">
+                <span className="font-semibold">Mode:</span>{" "}
+                {forecastHorizon === "now" ? "Live / Current" : `Forecast +${forecastHorizon}`}
+              </div>
+              <div className="mt-1 text-sm text-zinc-600">
+                <span className="font-semibold">Latest:</span> {fmtTime(latest?.tsMs ?? null)}
+                {secondsSinceFetch != null ? (
+                  <span className="text-zinc-500"> • Refreshed {secondsSinceFetch}s ago</span>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <div
+                className={`rounded-full px-4 py-2 text-xs font-extrabold ${statusBadgeClasses(
+                  flood.label
+                )}`}
+              >
+                {flood.label}
+                <span className="ml-2 font-semibold opacity-90">• {flood.note}</span>
+              </div>
+
+              <div
+                className={`rounded-full px-4 py-2 text-xs font-extrabold ${rainBadgeClasses(
+                  rainStatus.label
+                )}`}
+              >
+                RAIN {rainStatus.label}
+                <span className="ml-2 font-semibold opacity-90">• {rainStatus.note}</span>
+              </div>
+
+              <span
+                className={`rounded-full px-4 py-2 text-xs font-extrabold ${pillClasses(
+                  dataQuality.tone
+                )}`}
+                title={dataQuality.note}
+              >
+                {dataQuality.label}
+              </span>
+
+              <button
+                className="inline-flex items-center rounded-xl border border-zinc-200 bg-gray-700 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-gray-800"
+                onClick={loadLatestOnly}
+                type="button"
+              >
+                Refresh
+              </button>
+
+              <button
+                className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
+                onClick={handleDownloadCsv}
+                type="button"
+              >
+                Download CSV
+              </button>
+
+              <button
+                className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
+                onClick={handleDownloadJson}
+                type="button"
+              >
+                Download JSON
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
           <div className="flex items-start justify-between gap-4">
             <div>
               <div className="text-base font-extrabold text-zinc-900">Weather (Open-Meteo)</div>
               <div className="mt-1 text-xs text-zinc-500">
-                {selectedSensor.name} • Location: {WX_LAT.toFixed(5)}, {WX_LNG.toFixed(5)} •
+                {selectedSensor.name} • Location: {selectedSensor.lat.toFixed(5)}, {selectedSensor.lng.toFixed(5)} •
                 Timezone: Asia/Manila
               </div>
             </div>
@@ -813,123 +890,152 @@ export default function SensorDashboardPage() {
           )}
         </div>
 
-        <div className="mt-4 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-          <div>
-            <div className="mt-2 text-3xl font-semibold uppercase tracking-wide text-zinc-500">
-              Flood Monitoring
-            </div>
-            <h1 className="mt-1 text-2xl font-extrabold tracking-tight text-zinc-900">
-              Sensor Dashboard — {selectedSensor.name}
-            </h1>
-            <div className="mt-2 text-sm text-zinc-600">
-              <span className="font-semibold">Forecast mode:</span>{" "}
-              {forecastHorizon === "now" ? "Live / Current" : `+${forecastHorizon}`}
-            </div>
-            <div className="mt-1 text-sm text-zinc-600">
-              <span className="font-semibold">Latest:</span> {fmtTime(latest?.tsMs ?? null)}
-              {secondsSinceFetch != null ? (
-                <span className="text-zinc-500"> • Updated {secondsSinceFetch}s ago</span>
-              ) : null}
-            </div>
-          </div>
+        <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-3">
+          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm xl:col-span-2">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <div className="text-base font-extrabold text-zinc-900">Current vs forecast scenario</div>
+                <div className="mt-1 text-sm text-zinc-600">
+                  Forecast uses the same persistence-aware risk engine as the live flood map.
+                </div>
+              </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <div
-              className={`rounded-full px-4 py-2 text-xs font-extrabold ${statusBadgeClasses(
-                flood.label
-              )}`}
-            >
-              {flood.label}
-              <span className="ml-2 font-semibold opacity-90">• {flood.note}</span>
+              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
+                <div className="text-xs font-semibold text-zinc-500">Scenario mode</div>
+                <div className="mt-1 text-lg font-extrabold text-zinc-900">
+                  {forecastHorizon === "now" ? "Live / Current" : `Forecast +${forecastHorizon}`}
+                </div>
+                <div className="mt-1 text-xs text-zinc-500">
+                  Rain memory: {rainMemory.toFixed(3)}
+                </div>
+              </div>
             </div>
 
-            <div
-              className={`rounded-full px-4 py-2 text-xs font-extrabold ${rainBadgeClasses(
-                forecastRainStatus.label
-              )}`}
-            >
-              RAIN {forecastRainStatus.label}
-              <span className="ml-2 font-semibold opacity-90">• {forecastRainStatus.note}</span>
-            </div>
+            <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
+                <div className="text-xs font-semibold text-zinc-500">5-minute rain rate</div>
+                <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
+                  {latest?.rainRateMmHr300 != null ? `${fmt(latest.rainRateMmHr300, 1)} mm/hr` : "—"}
+                </div>
+                <div className="mt-2 text-sm text-zinc-500">
+                  Live measured intensity. This is not projected upward by horizon.
+                </div>
+              </div>
 
-            <span
-              className={`rounded-full px-4 py-2 text-xs font-extrabold ${pillClasses(
-                dataQuality.tone
-              )}`}
-              title={dataQuality.note}
-            >
-              {dataQuality.label}
-            </span>
+              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
+                <div className="text-xs font-semibold text-zinc-500">Projected rain total</div>
+                <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
+                  {forecastHorizon === "now"
+                    ? "—"
+                    : `${fmt(scenarioRisk.scenario.projectedRainMm, 1)} mm`}
+                </div>
+                <div className="mt-2 text-sm text-zinc-500">
+                  Scenario accumulation if current intensity persists.
+                </div>
+              </div>
 
-            <button
-              className="inline-flex items-center rounded-xl border border-zinc-200 bg-gray-700 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-gray-800"
-              onClick={loadLatestOnly}
-              type="button"
-            >
-              Refresh
-            </button>
+              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
+                <div className="text-xs font-semibold text-zinc-500">Stable water level</div>
+                <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
+                  {stableCm != null ? `${fmt(stableCm / 30.48, 2)} ft` : "—"}
+                </div>
+                <div className="mt-2 text-sm text-zinc-500">
+                  {stableCm != null ? `${fmt(stableCm, 1)} cm (filtered)` : "—"}
+                </div>
+              </div>
 
-            <button
-              className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
-              onClick={handleDownloadCsv}
-              type="button"
-            >
-              Download CSV
-            </button>
+              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
+                <div className="text-xs font-semibold text-zinc-500">Current flood depth</div>
+                <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
+                  {fmt(currentRisk.scenario.floodDepthCm, 1)} cm
+                </div>
+                <div className="mt-2 text-sm text-zinc-500">
+                  RawDist: {latest?.rawDistCm != null ? `${fmt(latest.rawDistCm, 1)} cm` : "—"} •
+                  DryDist:{" "}
+                  {latest?.dryDistanceCm != null
+                    ? `${fmt(latest.dryDistanceCm, 1)} cm`
+                    : selectedSensor.dryDistanceCm != null
+                    ? `${fmt(selectedSensor.dryDistanceCm, 1)} cm`
+                    : "—"}
+                </div>
+              </div>
 
-            <button
-              className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
-              onClick={handleDownloadJson}
-              type="button"
-            >
-              Download JSON
-            </button>
-          </div>
-        </div>
+              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
+                <div className="text-xs font-semibold text-zinc-500">Scenario flood depth</div>
+                <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
+                  {fmt(scenarioRisk.scenario.floodDepthCm, 1)} cm
+                </div>
+                <div className="mt-2 text-sm text-zinc-500">
+                  Δ depth:{" "}
+                  <span className={forecastDeltaDepth > 0 ? "font-bold text-red-700" : "font-bold text-zinc-700"}>
+                    {forecastHorizon === "now" ? "—" : `${forecastDeltaDepth >= 0 ? "+" : ""}${fmt(forecastDeltaDepth, 1)} cm`}
+                  </span>
+                </div>
+              </div>
 
-        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-4">
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-            <div className="text-xs font-semibold text-zinc-500">Stable water level</div>
-            <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
-              {stableWaterFt != null ? `${fmt(stableWaterFt, 2)} ft` : "—"}
-            </div>
-            <div className="mt-2 text-sm text-zinc-500">
-              {stableCm != null ? `${fmt(stableCm, 1)} cm (filtered)` : "—"}
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-            <div className="text-xs font-semibold text-zinc-500">
-              Flood depth ({forecastHorizon === "now" ? "current" : `forecast ${forecastHorizon}`})
-            </div>
-            <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
-              {floodDepthCm != null ? `${fmt(floodDepthCm, 1)} cm` : "—"}
-            </div>
-            <div className="mt-2 text-sm text-zinc-500">
-              DryDist:{" "}
-              {latest?.dryDistanceCm != null ? `${fmt(latest.dryDistanceCm, 1)} cm` : "—"} •
-              RawDist: {latest?.rawDistCm != null ? `${fmt(latest.rawDistCm, 1)} cm` : "—"}
+              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
+                <div className="text-xs font-semibold text-zinc-500">Map activation</div>
+                <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
+                  {activation.on ? "ON" : "OFF"}
+                </div>
+                <div className="mt-2 text-sm text-zinc-500">{activation.reason}</div>
+              </div>
             </div>
           </div>
 
           <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-            <div className="text-xs font-semibold text-zinc-500">Rain rate (5 min)</div>
-            <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
-              {latest?.rainRateMmHr300 != null ? `${fmt(latest.rainRateMmHr300, 1)} mm/hr` : "—"}
-            </div>
-            <div className="mt-2 text-sm text-zinc-500">
-              Tips300: {latest?.tips300 != null ? fmtInt(latest.tips300) : "—"} • Rain300:{" "}
-              {latest?.rainMm300 != null ? `${fmt(latest.rainMm300, 2)} mm` : "—"} • {MM_PER_TIP}{" "}
-              mm/tip
-            </div>
-          </div>
+            <div className="text-base font-extrabold text-zinc-900">Risk engine</div>
+            <div className="mt-4 space-y-4">
+              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
+                <div className="text-xs font-semibold text-zinc-500">Current risk</div>
+                <div className={`mt-2 text-3xl font-extrabold tracking-tight ${riskToneClasses(currentRisk.dynamicRisk)}`}>
+                  {currentRisk.dynamicRisk.toFixed(3)}
+                </div>
+                <div className="mt-1 text-sm text-zinc-500">
+                  Stage: {getStageLabel(currentRisk.riskStage)}
+                </div>
+              </div>
 
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-            <div className="text-xs font-semibold text-zinc-500">Activation (map)</div>
-            <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
-              {activation.on ? "ON" : "OFF"}
+              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
+                <div className="text-xs font-semibold text-zinc-500">Scenario risk</div>
+                <div className={`mt-2 text-3xl font-extrabold tracking-tight ${riskToneClasses(scenarioRisk.dynamicRisk)}`}>
+                  {scenarioRisk.dynamicRisk.toFixed(3)}
+                </div>
+                <div className="mt-1 text-sm text-zinc-500">
+                  Stage: {getStageLabel(scenarioRisk.riskStage)}
+                </div>
+                <div className="mt-2 text-sm text-zinc-500">
+                  Δ risk:{" "}
+                  <span className={forecastDeltaRisk > 0 ? "font-bold text-red-700" : "font-bold text-zinc-700"}>
+                    {forecastHorizon === "now" ? "—" : `${forecastDeltaRisk >= 0 ? "+" : ""}${forecastDeltaRisk.toFixed(3)}`}
+                  </span>
+                </div>
+              </div>
+
+              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
+                <div className="text-xs font-semibold text-zinc-500">Computation details</div>
+                <div className="mt-2 space-y-1 text-xs text-zinc-700">
+                  <div>
+                    Current rain factor: <span className="font-bold">{currentRisk.rainFactor.toFixed(3)}</span>
+                  </div>
+                  <div>
+                    Current depth factor: <span className="font-bold">{currentRisk.depthFactor.toFixed(3)}</span>
+                  </div>
+                  <div>
+                    Current effective depth: <span className="font-bold">{currentRisk.effectiveDepthFactor.toFixed(3)}</span>
+                  </div>
+                  <div className="pt-2">
+                    Scenario rain factor: <span className="font-bold">{scenarioRisk.rainFactor.toFixed(3)}</span>
+                  </div>
+                  <div>
+                    Scenario depth factor: <span className="font-bold">{scenarioRisk.depthFactor.toFixed(3)}</span>
+                  </div>
+                  <div>
+                    Scenario effective depth: <span className="font-bold">{scenarioRisk.effectiveDepthFactor.toFixed(3)}</span>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div className="mt-2 text-sm text-zinc-500">{activation.reason}</div>
           </div>
         </div>
 
@@ -955,47 +1061,24 @@ export default function SensorDashboardPage() {
                   Notes: <span className="font-semibold">STALE</span> means the device is not
                   sending recent records. Activation uses{" "}
                   <span className="font-semibold">tips60</span> or{" "}
-                  <span className="font-semibold">floodDepthCm ≥ {DEPTH_ON_CM}</span>.
+                  <span className="font-semibold">flood depth ≥ {DEPTH_ON_CM} cm</span>.
                 </div>
               </div>
 
-              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200 sm:min-w-[260px]">
-                <div className="text-xs font-semibold text-zinc-500">Key raw signals</div>
-                <div className="mt-2 space-y-1 text-xs text-zinc-700">
+              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200 sm:min-w-[320px]">
+                <div className="text-xs font-semibold text-zinc-500">Status snapshot</div>
+                <div className="mt-2 space-y-2 text-xs text-zinc-700">
                   <div>
-                    rawDistCm:{" "}
-                    <span className="font-bold">
-                      {latest?.rawDistCm != null ? fmt(latest.rawDistCm, 1) : "—"}
-                    </span>
+                    Flood status: <span className="font-bold">{flood.label}</span>
                   </div>
                   <div>
-                    usValid:{" "}
-                    <span className="font-bold">
-                      {latest?.usValid == null ? "—" : latest.usValid ? "true" : "false"}
-                    </span>
+                    Rain status: <span className="font-bold">{rainStatus.label}</span>
                   </div>
                   <div>
-                    acceptedForStable:{" "}
-                    <span className="font-bold">
-                      {latest?.acceptedForStable == null
-                        ? "—"
-                        : latest.acceptedForStable
-                        ? "true"
-                        : "false"}
-                    </span>
+                    Overflow: <span className="font-bold">{latestOverflow ? "Yes" : "No"}</span>
                   </div>
                   <div>
-                    tips60:{" "}
-                    <span className="font-bold">
-                      {latest?.tips60 != null ? fmtInt(latest.tips60) : "—"}
-                    </span>
-                  </div>
-                  <div>
-                    rainRate300:{" "}
-                    <span className="font-bold">
-                      {latest?.rainRateMmHr300 != null ? fmt(latest.rainRateMmHr300, 1) : "—"}
-                    </span>{" "}
-                    mm/hr
+                    Latest timestamp: <span className="font-bold">{fmtTime(latest?.tsMs ?? null)}</span>
                   </div>
                 </div>
               </div>
@@ -1013,17 +1096,17 @@ export default function SensorDashboardPage() {
                 {latest?.rainMm60 != null ? `${fmt(latest.rainMm60, 2)} mm` : "—"}
               </dd>
 
+              <dt className="text-zinc-500">Rate (60s)</dt>
+              <dd className="text-right font-bold text-zinc-900">
+                {latest?.rainRateMmHr60 != null ? `${fmt(latest.rainRateMmHr60, 1)} mm/hr` : "—"}
+              </dd>
+
               <dt className="text-zinc-500">Tips (5m)</dt>
               <dd className="text-right font-bold text-zinc-900">{fmtInt(latest?.tips300 ?? null)}</dd>
 
               <dt className="text-zinc-500">Rain (5m)</dt>
               <dd className="text-right font-bold text-zinc-900">
                 {latest?.rainMm300 != null ? `${fmt(latest.rainMm300, 2)} mm` : "—"}
-              </dd>
-
-              <dt className="text-zinc-500">Rate (60s)</dt>
-              <dd className="text-right font-bold text-zinc-900">
-                {latest?.rainRateMmHr60 != null ? `${fmt(latest.rainRateMmHr60, 1)} mm/hr` : "—"}
               </dd>
 
               <dt className="text-zinc-500">Rate (5m)</dt>
@@ -1042,11 +1125,20 @@ export default function SensorDashboardPage() {
               <dd className="text-right font-bold text-zinc-900">
                 {latest?.rssiDbm != null ? `${fmtInt(latest.rssiDbm)} dBm` : "—"}
               </dd>
+
+              <dt className="text-zinc-500">Battery</dt>
+              <dd className="text-right font-bold text-zinc-900">
+                {latest?.batteryPercentage != null ? `${fmtInt(latest.batteryPercentage)}%` : "—"}
+              </dd>
+
+              <dt className="text-zinc-500">Network</dt>
+              <dd className="text-right font-bold text-zinc-900">
+                {latest?.networkType ?? "—"}
+              </dd>
             </dl>
 
             <div className="mt-3 text-xs text-zinc-500">
-              Calibration: {MM_PER_TIP} mm/tip (tipping bucket). Intensity uses 5-minute rate when
-              available.
+              Calibration: 0.327 mm/tip (tipping bucket). Forecast uses projected rainfall total, not a fake projected 5-minute intensity.
             </div>
           </div>
         </div>
@@ -1068,6 +1160,7 @@ export default function SensorDashboardPage() {
             <div>• {reportSummary.depth}</div>
             <div>• {reportSummary.activation}</div>
             <div>• {reportSummary.waterStatus}</div>
+            <div>• {reportSummary.risk}</div>
           </div>
         </div>
 
@@ -1096,7 +1189,7 @@ export default function SensorDashboardPage() {
             </div>
           ) : (
             <div className="mt-4 overflow-x-auto">
-              <table className="min-w-[1200px] w-full border-collapse text-left text-xs">
+              <table className="min-w-[1300px] w-full border-collapse text-left text-xs">
                 <thead>
                   <tr className="text-gray-900">
                     {[
@@ -1113,6 +1206,7 @@ export default function SensorDashboardPage() {
                       "usValid",
                       "accepted",
                       "overflow",
+                      "Battery",
                       "RSSI",
                       "Activated",
                     ].map((h) => (
@@ -1128,12 +1222,15 @@ export default function SensorDashboardPage() {
 
                 <tbody>
                   {[...recent]
+                    .filter((p) => p.deviceId === selectedDeviceId)
                     .slice(-120)
                     .reverse()
                     .map((p, idx) => {
                       const rowActivated =
                         !p.isStale &&
-                        ((p.tips60 ?? 0) > 0 || (p.floodDepthCm ?? 0) >= DEPTH_ON_CM);
+                        (Boolean(p.overflow) ||
+                          (p.tips60 ?? 0) > 0 ||
+                          (p.floodDepthCm ?? 0) >= DEPTH_ON_CM);
 
                       return (
                         <tr
@@ -1180,6 +1277,9 @@ export default function SensorDashboardPage() {
                             {p.overflow == null ? "—" : p.overflow ? "true" : "false"}
                           </td>
 
+                          <td className="px-3 py-3">
+                            {p.batteryPercentage != null ? `${fmtInt(p.batteryPercentage)}%` : "—"}
+                          </td>
                           <td className="px-3 py-3">
                             {p.rssiDbm != null ? fmtInt(p.rssiDbm) : "—"}
                           </td>

@@ -1,61 +1,35 @@
-// app/dashboard/page.tsx
 "use client";
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { FeatureCollection, Feature, Point } from "geojson";
-import FixedFloodMap from "@/components/FixedFloodMap";
-
-type SensorDevice = {
-  id: string;
-  name: string;
-  lat: number;
-  lng: number;
-  zoneLabel: string;
-};
-
-type AnyPoint = Record<string, unknown>;
+import FixedFloodMap, { type SensorDevice } from "@/components/FixedFloodMap";
+import type { SensorPoint } from "@/app/lib/sensorStore";
+import {
+  extractFloodDepthCm,
+  extractRainMmHr,
+  extractTimestampMs,
+  isOverflow,
+} from "@/app/lib/sensorReading";
+import { type ForecastHorizon } from "@/app/lib/floodForecast";
+import { listSensors, type SensorRecord } from "@/app/lib/sensorsRepo";
 
 type Payload = {
-  latest: AnyPoint | null;
-  recent: AnyPoint[];
-  latestByDevice?: Record<string, AnyPoint>;
+  latest: SensorPoint | null;
+  recent: SensorPoint[];
+  latestByDevice?: Record<string, SensorPoint>;
   serverTime: number;
 };
 
-type ForecastHorizon = "now" | "2h" | "4h" | "6h" | "8h";
 type WarningLevel = "NORMAL" | "WATCH" | "WARNING" | "DANGER";
-
-function toNumber(v: unknown): number | null {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string" && v.trim() !== "") {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  }
-  return null;
-}
-
-function toTsMs(v: unknown): number | null {
-  const n = toNumber(v);
-  if (n != null) {
-    if (n > 1e12) return Math.round(n);
-    if (n > 1e9) return Math.round(n * 1000);
-    return null;
-  }
-  if (typeof v === "string") {
-    const d = new Date(v);
-    if (!Number.isNaN(d.getTime())) return d.getTime();
-  }
-  return null;
-}
 
 function fmt(n: number | null, digits = 1) {
   if (n == null || !Number.isFinite(n)) return "—";
   return n.toFixed(digits);
 }
 
-function classifyWarning(depthCm: number): WarningLevel {
-  if (depthCm >= 30) return "DANGER";
+function classifyWarning(depthCm: number, overflow = false): WarningLevel {
+  if (overflow || depthCm >= 30) return "DANGER";
   if (depthCm >= 20) return "WARNING";
   if (depthCm >= 10) return "WATCH";
   return "NORMAL";
@@ -126,38 +100,51 @@ export default function DashboardPage() {
     []
   );
 
-  const devices: SensorDevice[] = useMemo(
-    () => [
-      {
-        id: "esp32-1",
-        name: "Sensor 1",
-        lat: 13.735412678211276,
-        lng: 121.07296804092847,
-        zoneLabel: "Primary test zone",
-      },
-      {
-  id: "esp32-2",
-  name: "Sensor 2",
-  lat: 13.77057650804614,
-  lng: 121.06549040352245,
-  zoneLabel: "Secondary monitoring zone",
-},
-{
-  id: "esp32-3",
-  name: "Sensor 3",
-  lat: 13.748933930810766,
-  lng: 121.07199995881057,
-  zoneLabel: "Tertiary monitoring zone",
-},
-    ],
-    []
-  );
-
-  const [latestByDevice, setLatestByDevice] = useState<Record<string, AnyPoint>>({});
+  const [sensorRecords, setSensorRecords] = useState<SensorRecord[]>([]);
+  const [sensorsLoading, setSensorsLoading] = useState(true);
+  const [latestByDevice, setLatestByDevice] = useState<Record<string, SensorPoint>>({});
   const [manualSelectedDeviceId, setManualSelectedDeviceId] = useState<string>("");
   const [forecastHorizon, setForecastHorizon] = useState<ForecastHorizon>("now");
   const [userPosition, setUserPosition] = useState<{ lat: number; lng: number } | null>(null);
   const [lastPollMs, setLastPollMs] = useState<number>(0);
+
+  const devices: SensorDevice[] = useMemo(() => {
+    return sensorRecords
+      .filter((s) => s.is_active)
+      .map((s) => ({
+        id: s.id,
+        name: s.name,
+        lat: s.lat,
+        lng: s.lng,
+        zoneLabel: s.zone_label ?? "—",
+      }));
+  }, [sensorRecords]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSensorsFromDb() {
+      try {
+        setSensorsLoading(true);
+        const rows = await listSensors();
+        if (!cancelled) {
+          setSensorRecords(rows);
+        }
+      } catch (err) {
+        console.error("Failed to load sensors:", err);
+      } finally {
+        if (!cancelled) {
+          setSensorsLoading(false);
+        }
+      }
+    }
+
+    loadSensorsFromDb();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!("geolocation" in navigator)) return;
@@ -183,15 +170,18 @@ export default function DashboardPage() {
 
     async function loadLatest() {
       try {
-        const res = await fetch(`/api/data?limit=300&t=${Date.now()}`, { cache: "no-store" });
+        const res = await fetch(`/api/data?limit=300&t=${Date.now()}`, {
+          cache: "no-store",
+        });
         if (!res.ok) return;
+
         const json: Payload = await res.json();
         if (!cancelled) {
           setLatestByDevice(json.latestByDevice ?? {});
           setLastPollMs(json.serverTime ?? Date.now());
         }
-      } catch {
-        //
+      } catch (err) {
+        console.error("Failed to load telemetry:", err);
       }
     }
 
@@ -203,6 +193,14 @@ export default function DashboardPage() {
       window.clearInterval(id);
     };
   }, []);
+
+  useEffect(() => {
+    if (!manualSelectedDeviceId) return;
+    const exists = devices.some((d) => d.id === manualSelectedDeviceId);
+    if (!exists) {
+      setManualSelectedDeviceId("");
+    }
+  }, [manualSelectedDeviceId, devices]);
 
   const nearestDevice = useMemo(() => {
     if (!userPosition || devices.length === 0) return null;
@@ -237,26 +235,10 @@ export default function DashboardPage() {
     [latestByDevice, selectedDeviceId]
   );
 
-  const latestTsMs = useMemo(() => {
-    if (!selectedLatest) return null;
-    return toTsMs(selectedLatest.ts) ?? toTsMs(selectedLatest.created_at) ?? null;
-  }, [selectedLatest]);
-
-  const floodDepthCm = useMemo(() => {
-    if (!selectedLatest) return null;
-    return toNumber(selectedLatest.floodDepthCm) ?? toNumber(selectedLatest.flood_depth_cm) ?? null;
-  }, [selectedLatest]);
-
-  const rainRateMmHr = useMemo(() => {
-    if (!selectedLatest) return null;
-    return (
-      toNumber(selectedLatest.rainRateMmHr300) ??
-      toNumber(selectedLatest.rain_rate_mmh_300) ??
-      toNumber(selectedLatest.rainRateMmHr60) ??
-      toNumber(selectedLatest.rain_rate_mmh_60) ??
-      null
-    );
-  }, [selectedLatest]);
+  const latestTsMs = useMemo(() => extractTimestampMs(selectedLatest), [selectedLatest]);
+  const floodDepthCm = useMemo(() => extractFloodDepthCm(selectedLatest), [selectedLatest]);
+  const rainRateMmHr = useMemo(() => extractRainMmHr(selectedLatest), [selectedLatest]);
+  const selectedOverflow = useMemo(() => isOverflow(selectedLatest), [selectedLatest]);
 
   const isLive = useMemo(() => {
     if (!latestTsMs || !lastPollMs) return false;
@@ -269,8 +251,8 @@ export default function DashboardPage() {
   }, [userPosition, selectedDevice]);
 
   const currentWarning = useMemo<WarningLevel>(() => {
-    return classifyWarning(floodDepthCm ?? 0);
-  }, [floodDepthCm]);
+    return classifyWarning(floodDepthCm ?? 0, selectedOverflow);
+  }, [floodDepthCm, selectedOverflow]);
 
   const scenario = useMemo(() => {
     const currentRain = rainRateMmHr ?? 0;
@@ -281,25 +263,27 @@ export default function DashboardPage() {
       return {
         projectedRainMm: 0,
         projectedFloodDepthCm: currentDepth,
-        projectedWarning: classifyWarning(currentDepth),
+        projectedWarning: classifyWarning(currentDepth, selectedOverflow),
         advisory:
-          currentDepth > 0 || currentRain > 0
-            ? `Current rainfall is ${rainLabel(currentRain).toLowerCase()}. Current flood depth is ${fmt(currentDepth, 1)} cm.`
+          currentDepth > 0 || currentRain > 0 || selectedOverflow
+            ? `Current rainfall is ${rainLabel(currentRain).toLowerCase()}. Current flood depth is ${fmt(currentDepth, 1)} cm${selectedOverflow ? " and overflow is detected." : "."}`
             : "Conditions are currently calm based on the latest available reading.",
       };
     }
 
     const projectedRainMm = currentRain * hours;
     const projectedDepth = Math.max(currentDepth, currentDepth + projectedRainMm * 0.35);
-    const projectedWarning = classifyWarning(projectedDepth);
+    const projectedWarning = classifyWarning(projectedDepth, selectedOverflow);
 
     return {
       projectedRainMm,
       projectedFloodDepthCm: projectedDepth,
       projectedWarning,
-      advisory: `If current rainfall persists for ${hours} hour${hours > 1 ? "s" : ""}, projected rainfall may reach ${fmt(projectedRainMm, 1)} mm and flood depth may reach about ${fmt(projectedDepth, 1)} cm.`,
+      advisory: `If current rainfall persists for ${hours} hour${hours > 1 ? "s" : ""}, projected rainfall may reach ${fmt(projectedRainMm, 1)} mm and flood depth may reach about ${fmt(projectedDepth, 1)} cm${selectedOverflow ? ". Overflow is already detected, so treat this as critical." : "."}`,
     };
-  }, [forecastHorizon, rainRateMmHr, floodDepthCm]);
+  }, [forecastHorizon, rainRateMmHr, floodDepthCm, selectedOverflow]);
+
+  const sensorCount = devices.length;
 
   return (
     <div className="min-h-screen bg-zinc-50">
@@ -324,6 +308,12 @@ export default function DashboardPage() {
             >
               Open Sensor Dashboard
             </Link>
+            <Link
+              href="/dashboard/admin/sensors"
+              className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold shadow-sm hover:bg-zinc-50"
+            >
+              Admin Sensors
+            </Link>
           </div>
         </div>
 
@@ -335,13 +325,18 @@ export default function DashboardPage() {
                 <select
                   value={selectedDeviceId}
                   onChange={(e) => setManualSelectedDeviceId(e.target.value)}
-                  className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-semibold text-zinc-900 sm:w-auto"
+                  disabled={devices.length === 0}
+                  className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-semibold text-zinc-900 disabled:cursor-not-allowed disabled:bg-zinc-100 sm:w-auto"
                 >
-                  {devices.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name} — {d.zoneLabel}
-                    </option>
-                  ))}
+                  {devices.length === 0 ? (
+                    <option value="">No sensors available</option>
+                  ) : (
+                    devices.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name} — {d.zoneLabel}
+                      </option>
+                    ))
+                  )}
                 </select>
 
                 <div className="text-sm text-zinc-600">
@@ -388,9 +383,7 @@ export default function DashboardPage() {
             </div>
             <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
               {forecastHorizon === "now"
-                ? rainRateMmHr != null
-                  ? `${fmt(rainRateMmHr, 1)} mm/hr`
-                  : "—"
+                ? `${fmt(rainRateMmHr, 1)} mm/hr`
                 : `${fmt(scenario.projectedRainMm, 1)} mm`}
             </div>
             <div className="mt-2 text-sm text-zinc-500">
@@ -406,9 +399,7 @@ export default function DashboardPage() {
             </div>
             <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
               {forecastHorizon === "now"
-                ? floodDepthCm != null
-                  ? `${fmt(floodDepthCm, 1)} cm`
-                  : "—"
+                ? `${fmt(floodDepthCm, 1)} cm`
                 : `${fmt(scenario.projectedFloodDepthCm, 1)} cm`}
             </div>
             <div className="mt-2 text-sm text-zinc-500">Based on selected sensor</div>
@@ -433,13 +424,14 @@ export default function DashboardPage() {
           </div>
 
           <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-            <div className="text-xs font-semibold text-zinc-500">Selected Sensor</div>
-            <div className="mt-2 text-xl font-extrabold tracking-tight text-zinc-900">
-              {selectedDevice?.name ?? "—"}
+            <div className="text-xs font-semibold text-zinc-500">Sensors Online</div>
+            <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
+              {sensorsLoading ? "…" : sensorCount}
             </div>
-            <div className="mt-2 text-sm text-zinc-500">{selectedDevice?.zoneLabel ?? "—"}</div>
             <div className="mt-2 text-sm text-zinc-500">
-              {selectedLatest ? (isLive ? "Live telemetry available" : "Latest reading may be stale") : "No recent telemetry for this sensor"}
+              {selectedDevice
+                ? `${selectedDevice.name} selected`
+                : "No active sensors available"}
             </div>
           </div>
         </div>
@@ -449,23 +441,34 @@ export default function DashboardPage() {
           <div className="mt-2 text-sm text-zinc-700">{scenario.advisory}</div>
         </div>
 
-        <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-2 sm:p-3 shadow-sm">
-          <FixedFloodMap
-            geoJsonData={emptyPoints}
-            devices={devices}
-            selectedDeviceId={selectedDeviceId}
-            userPosition={userPosition}
-            forecastHorizon={forecastHorizon}
-            onSelectDevice={setManualSelectedDeviceId}
-          />
+        <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-2 shadow-sm sm:p-3">
+          {sensorsLoading ? (
+            <div className="flex h-[80vh] w-full items-center justify-center rounded-lg bg-zinc-100 text-sm text-zinc-500">
+              Loading sensors and map…
+            </div>
+          ) : devices.length === 0 ? (
+            <div className="flex h-[80vh] w-full items-center justify-center rounded-lg bg-zinc-100 text-sm text-zinc-500">
+              No active sensors found in the database.
+            </div>
+          ) : (
+            <FixedFloodMap
+              geoJsonData={emptyPoints}
+              devices={devices}
+              selectedDeviceId={selectedDeviceId}
+              userPosition={userPosition}
+              forecastHorizon={forecastHorizon}
+              onSelectDevice={setManualSelectedDeviceId}
+            />
+          )}
         </div>
 
         <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-5 text-sm text-zinc-700 shadow-sm">
           <div className="font-extrabold text-zinc-900">What you can do next</div>
           <ul className="mt-2 list-disc space-y-1 pl-5">
-            <li>Use the sensor selector to switch monitored locations.</li>
+            <li>Use the sensor selector to switch monitored locations loaded from the database.</li>
             <li>Use the scenario toggle to preview 2h, 4h, 6h, and 8h outcomes if current conditions persist.</li>
             <li>Open the Sensor Dashboard for more detailed technical readings and logs.</li>
+            <li>Open Admin Sensors to manage sensor coordinates and status.</li>
           </ul>
         </div>
       </div>

@@ -1,27 +1,15 @@
 // app/api/ingest/route.ts
 
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import { appendPoint, SensorPoint } from "@/app/lib/sensorStore";
+import { appendPoint, type SensorPoint } from "@/app/lib/sensorStore";
+import { processRainEventForReading } from "@/app/lib/rainEventEngine";
+import { processAlertsForReading } from "@/app/lib/alertsEngine";
+import { supabaseAdmin } from "@/app/lib/supabaseAdmin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MM_PER_TIP = Number(process.env.MM_PER_TIP ?? "0.2");
-
-const supabase = (() => {
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!url || !key) return null;
-
-  return createClient(url, key, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-  });
-})();
 
 function bad(msg: string, status = 400) {
   return NextResponse.json({ ok: false, error: msg }, { status });
@@ -50,8 +38,6 @@ function nullableNumber(v: unknown): number | null {
 }
 
 export async function POST(req: Request) {
-  if (!supabase) return bad("Server missing Supabase configuration", 500);
-
   const secret = process.env.INGEST_SECRET;
   if (!secret) return bad("Server missing INGEST_SECRET", 500);
 
@@ -88,7 +74,7 @@ export async function POST(req: Request) {
   const dryDistanceCm = Number(process.env.DRY_DISTANCE_CM);
   const dryOk = Number.isFinite(dryDistanceCm);
 
-  // Prefer server-computed water depth values
+  // Server-computed water depth
   const rawWaterFromServer =
     dryOk && rawDistOk ? Math.max(0, dryDistanceCm - rawDistCm) : null;
 
@@ -104,7 +90,7 @@ export async function POST(req: Request) {
   const tips60 = nullableNonNegative(body.tips60);
   const tips300 = nullableNonNegative(body.tips300);
 
-  // Prefer server-side rain-rate calculation when tips exist
+  // Prefer server-side rain rate calculation when tips exist
   const rainRateMmHr60 =
     tips60 != null
       ? tips60 * MM_PER_TIP * 60
@@ -115,10 +101,8 @@ export async function POST(req: Request) {
       ? tips300 * MM_PER_TIP * 12
       : nullableNonNegative(body.rainRateMmHr300);
 
-  // Signal (Updated for LTE rssiDbm)
+  // Signal / power / network
   const rssiDbm = nullableNumber(body.rssiDbm);
-
-  // --- NEW: INA219 Power & Battery Metrics ---
   const vbatV = nullableNumber(body.vbatV);
   const currentMa = nullableNumber(body.currentMa);
   const batteryPercentage = nullableNumber(body.batteryPercentage);
@@ -148,18 +132,15 @@ export async function POST(req: Request) {
     dryDistanceCm: dryOk ? dryDistanceCm : null,
     floodDepthCm,
 
-    // Include new power fields in local cache
     vbatV,
     currentMa,
     batteryPercentage,
+    networkType,
   };
-
-  // Local cache / convenience only
-  await appendPoint(point);
 
   const tsIso = new Date(ts).toISOString();
 
-  const { error } = await supabase.from("sensor_readings").insert({
+  const { error } = await supabaseAdmin.from("sensor_readings").insert({
     device_id: deviceId,
     ts: tsIso,
 
@@ -182,7 +163,6 @@ export async function POST(req: Request) {
     flood_depth_cm: floodDepthCm,
     dry_distance_cm: dryOk ? dryDistanceCm : null,
 
-    // --- NEW: Database Mappings for Power ---
     vbat_v: vbatV,
     current_ma: currentMa,
     battery_percentage: batteryPercentage,
@@ -192,6 +172,22 @@ export async function POST(req: Request) {
   if (error) {
     console.error("Supabase insert error:", error);
     return bad("Database insert failed", 500);
+  }
+
+  // Keep in-memory cache aligned with accepted DB writes
+  await appendPoint(point);
+
+  // Update event and alert layers without breaking ingestion on downstream failure
+  try {
+    await processRainEventForReading(point);
+  } catch (err) {
+    console.error("[ingest] processRainEventForReading failed:", err);
+  }
+
+  try {
+    await processAlertsForReading(point);
+  } catch (err) {
+    console.error("[ingest] processAlertsForReading failed:", err);
   }
 
   return NextResponse.json({
@@ -206,7 +202,8 @@ export async function POST(req: Request) {
       floodDepthCm,
       rainRateMmHr60,
       rainRateMmHr300,
-      batteryPercentage, // Included in response for device verification
+      batteryPercentage,
+      networkType,
     },
   });
 }
