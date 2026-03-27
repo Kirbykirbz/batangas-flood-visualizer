@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import AdminFeedbackInbox from "@/components/admin/AdminFeedbackInbox";
 import AdminLoginModal from "@/components/auth/AdminLoginModal";
+import PushSubscriptionButton from "@/components/notifications/PushSubscriptionButton";
 import {
   getCurrentSession,
   getCurrentUserRole,
@@ -39,20 +40,20 @@ export default function Navbar() {
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   async function refreshAuthState() {
-  try {
-    const session = await getCurrentSession();
-    const currentRole = await getCurrentUserRole();
+    try {
+      const session = await getCurrentSession();
+      const currentRole = await getCurrentUserRole();
 
-    setIsLoggedIn(!!session?.user);
-    setUserEmail(session?.user?.email ?? null);
-    setRole(currentRole);
-  } catch (err) {
-    console.error("Failed to refresh auth state:", err);
-    setIsLoggedIn(false);
-    setUserEmail(null);
-    setRole(null);
+      setIsLoggedIn(!!session?.user);
+      setUserEmail(session?.user?.email ?? null);
+      setRole(currentRole);
+    } catch (err) {
+      console.error("Failed to refresh auth state:", err);
+      setIsLoggedIn(false);
+      setUserEmail(null);
+      setRole(null);
+    }
   }
-}
 
   useEffect(() => {
     (async () => {
@@ -114,7 +115,9 @@ export default function Navbar() {
           </Link>
 
           <div className="flex items-center gap-3">
-            {isAdmin && <AdminFeedbackInbox />}
+            {isAdmin ? <AdminFeedbackInbox /> : null}
+
+            <PushSubscriptionButton />
 
             <div ref={menuRef} className="relative">
               <button
@@ -126,7 +129,7 @@ export default function Navbar() {
                 <UserIcon />
               </button>
 
-              {menuOpen && (
+              {menuOpen ? (
                 <div className="absolute right-0 top-14 z-[3200] w-64 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl">
                   <div className="border-b border-zinc-200 px-4 py-3">
                     {isLoggedIn ? (
@@ -160,12 +163,12 @@ export default function Navbar() {
                     </Link>
 
                     <Link
-  href="/dashboard/admin/events"
-  onClick={() => setMenuOpen(false)}
-  className="block px-4 py-2 text-sm font-semibold text-zinc-800 hover:bg-zinc-50"
->
-  Rain Events
-</Link>
+                      href="/dashboard/admin/events"
+                      onClick={() => setMenuOpen(false)}
+                      className="block px-4 py-2 text-sm font-semibold text-zinc-800 hover:bg-zinc-50"
+                    >
+                      Rain Events
+                    </Link>
 
                     <Link
                       href="/dashboard/sensor"
@@ -175,7 +178,7 @@ export default function Navbar() {
                       Sensor Dashboard
                     </Link>
 
-                    {isAdmin && (
+                    {isAdmin ? (
                       <>
                         <div className="my-2 border-t border-zinc-100" />
 
@@ -198,7 +201,7 @@ export default function Navbar() {
                           Admin Dashboard
                         </button>
                       </>
-                    )}
+                    ) : null}
 
                     <div className="my-2 border-t border-zinc-100" />
 
@@ -224,7 +227,7 @@ export default function Navbar() {
                     )}
                   </div>
                 </div>
-              )}
+              ) : null}
             </div>
           </div>
         </div>

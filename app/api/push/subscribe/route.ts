@@ -1,38 +1,48 @@
-import { NextRequest, NextResponse } from "next/server";
-import { upsertPushSubscription } from "@/app/lib/pushRepo";
+import { NextResponse } from "next/server";
+import { upsertPushSubscriptionServer } from "@/app/lib/pushRepoServer";
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
-    const body = await req.json();
+    const body = (await req.json()) as {
+      endpoint?: string;
+      p256dh?: string;
+      auth?: string;
+      deviceId?: string | null;
+      scope?: string | null;
+      userId?: string | null;
+    };
 
-    const endpoint = typeof body.endpoint === "string" ? body.endpoint : "";
-    const p256dh = typeof body.p256dh === "string" ? body.p256dh : "";
-    const auth = typeof body.auth === "string" ? body.auth : "";
-    const deviceId = typeof body.deviceId === "string" ? body.deviceId : null;
-    const scope = typeof body.scope === "string" ? body.scope : null;
+    const endpoint = String(body.endpoint ?? "").trim();
+    const p256dh = String(body.p256dh ?? "").trim();
+    const auth = String(body.auth ?? "").trim();
 
     if (!endpoint || !p256dh || !auth) {
       return NextResponse.json(
-        { ok: false, error: "Missing subscription payload." },
+        { ok: false, error: "endpoint, p256dh, and auth are required" },
         { status: 400 }
       );
     }
 
-    await upsertPushSubscription({
-      user_id: null,
-      device_id: deviceId,
+    const id = await upsertPushSubscriptionServer({
+      user_id: body.userId ?? null,
+      device_id: body.deviceId ?? null,
       endpoint,
       p256dh,
       auth,
-      scope,
+      scope: body.scope ?? null,
     });
 
-    return NextResponse.json({ ok: true });
-  } catch (err) {
+    return NextResponse.json({ ok: true, id });
+  } catch (error) {
+    console.error("[POST /api/push/subscribe] failed:", error);
+
     return NextResponse.json(
       {
         ok: false,
-        error: err instanceof Error ? err.message : "Failed to save subscription.",
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to subscribe push notifications",
       },
       { status: 500 }
     );

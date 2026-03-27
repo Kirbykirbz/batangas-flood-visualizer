@@ -94,6 +94,14 @@ function cardValueToneClasses(tone: "default" | "ok" | "warn" | "bad") {
   }
 }
 
+function actionButtonClasses(variant: "default" | "primary" = "default") {
+  if (variant === "primary") {
+    return "inline-flex items-center rounded-xl bg-zinc-900 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-zinc-800";
+  }
+
+  return "inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50";
+}
+
 function Panel({
   title,
   subtitle,
@@ -116,6 +124,32 @@ function Panel({
       </div>
       <div>{children}</div>
     </section>
+  );
+}
+
+function StatCard({
+  title,
+  value,
+  tone = "default",
+  subtitle,
+}: {
+  title: string;
+  value: string | number;
+  tone?: "default" | "ok" | "warn" | "bad";
+  subtitle: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+      <div className="text-xs font-semibold text-zinc-500">{title}</div>
+      <div
+        className={`mt-2 text-3xl font-extrabold tracking-tight ${cardValueToneClasses(
+          tone
+        )}`}
+      >
+        {value}
+      </div>
+      <div className="mt-2 text-sm text-zinc-500">{subtitle}</div>
+    </div>
   );
 }
 
@@ -147,7 +181,8 @@ export default function AdminDashboardPage() {
       }
     }
 
-    loadSensorsData();
+    void loadSensorsData();
+
     return () => {
       cancelled = true;
     };
@@ -172,7 +207,7 @@ export default function AdminDashboardPage() {
       }
     }
 
-    loadFeedbackData();
+    void loadFeedbackData();
     const id = window.setInterval(loadFeedbackData, 15000);
 
     return () => {
@@ -213,7 +248,7 @@ export default function AdminDashboardPage() {
       }
     }
 
-    loadTelemetry();
+    void loadTelemetry();
     const id = window.setInterval(loadTelemetry, 5000);
 
     return () => {
@@ -289,42 +324,7 @@ export default function AdminDashboardPage() {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <Link
-              href="/dashboard"
-              className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
-            >
-              Public Dashboard
-            </Link>
-
-            <Link
-              href="/dashboard/sensor"
-              className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
-            >
-              Sensor Dashboard
-            </Link>
-
-            <Link
-              href="/dashboard/admin/sensors"
-              className="inline-flex items-center rounded-xl bg-zinc-900 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-zinc-800"
-            >
-              Manage Sensors
-            </Link>
-
-            <Link
-              href="/dashboard/admin/events"
-              className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
-            >
-              Rain Events
-            </Link>
-
-            <Link
-              href="/dashboard/admin/alerts"
-              className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
-            >
-              Alerts
-            </Link>
-          </div>
+        
         </div>
 
         {error && (
@@ -334,87 +334,56 @@ export default function AdminDashboardPage() {
         )}
 
         <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-            <div className="text-xs font-semibold text-zinc-500">Sensors Total</div>
-            <div
-              className={`mt-2 text-3xl font-extrabold tracking-tight ${cardValueToneClasses(
-                "default"
-              )}`}
-            >
-              {loading ? "…" : counts.total}
-            </div>
-            <div className="mt-2 text-sm text-zinc-500">
-              Active: {counts.active} • Inactive: {counts.inactive}
-            </div>
-          </div>
+          <StatCard
+            title="Sensors Total"
+            value={loading ? "…" : counts.total}
+            subtitle={`Active: ${counts.active} • Inactive: ${counts.inactive}`}
+          />
 
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-            <div className="text-xs font-semibold text-zinc-500">Live vs Stale</div>
-            <div
-              className={`mt-2 text-3xl font-extrabold tracking-tight ${cardValueToneClasses(
-                counts.stale > 0 ? "warn" : "ok"
-              )}`}
-            >
-              {loading ? "…" : counts.live}
-            </div>
-            <div className="mt-2 text-sm text-zinc-500">
-              Live sensors • Stale: {counts.stale}
-            </div>
-          </div>
+          <StatCard
+            title="Live vs Stale"
+            value={loading ? "…" : counts.live}
+            tone={counts.stale > 0 ? "warn" : "ok"}
+            subtitle={`Live sensors • Stale: ${counts.stale}`}
+          />
 
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-            <div className="text-xs font-semibold text-zinc-500">Flood / Overflow Flags</div>
-            <div
-              className={`mt-2 text-3xl font-extrabold tracking-tight ${cardValueToneClasses(
-                counts.overflow > 0 || counts.warningDepth > 0 ? "bad" : "ok"
-              )}`}
-            >
-              {loading ? "…" : counts.warningDepth}
-            </div>
-            <div className="mt-2 text-sm text-zinc-500">
-              Sensors with depth ≥ 20 cm • Overflow: {counts.overflow}
-            </div>
-          </div>
+          <StatCard
+            title="Flood / Overflow Flags"
+            value={loading ? "…" : counts.warningDepth}
+            tone={counts.overflow > 0 || counts.warningDepth > 0 ? "bad" : "ok"}
+            subtitle={`Sensors with depth ≥ 20 cm • Overflow: ${counts.overflow}`}
+          />
 
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-            <div className="text-xs font-semibold text-zinc-500">New Feedback</div>
-            <div
-              className={`mt-2 text-3xl font-extrabold tracking-tight ${cardValueToneClasses(
-                counts.feedbackNew > 0 ? "warn" : "ok"
-              )}`}
-            >
-              {loading ? "…" : counts.feedbackNew}
-            </div>
-            <div className="mt-2 text-sm text-zinc-500">Unread public messages</div>
-          </div>
+          <StatCard
+            title="New Feedback"
+            value={loading ? "…" : counts.feedbackNew}
+            tone={counts.feedbackNew > 0 ? "warn" : "ok"}
+            subtitle="Unread public messages"
+          />
         </div>
 
         <div className="mt-5">
           <Panel
-            title="Push Notification Testing"
-            subtitle="Use this panel to validate subscription and manual push delivery before relying on automatic severe-alert notifications."
+            title="Push Notifications"
+            subtitle="Subscribe this browser and validate manual push delivery using the same pipeline used by alert-triggered notifications."
           >
-            <div className="grid grid-cols-1 gap-4 p-5 lg:grid-cols-[1fr_1fr]">
-              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
-                <div className="text-xs font-semibold text-zinc-500">Step 1</div>
-                <div className="mt-1 text-sm font-bold text-zinc-900">
-                  Subscribe this browser
-                </div>
-                <div className="mt-2 text-sm text-zinc-600">
-                  Register the browser for severe flood and rainfall push notifications.
-                </div>
-                <div className="mt-4">
-                  <PushSubscriptionButton />
+            <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-[auto_1fr] md:items-center">
+              <div className="flex items-center gap-4">
+                <PushSubscriptionButton />
+                <div>
+                  <div className="text-sm font-bold text-zinc-900">
+                    Browser subscription
+                  </div>
+                  <div className="mt-1 text-sm text-zinc-600">
+                    Enable push notifications for this browser with the bell control.
+                  </div>
                 </div>
               </div>
 
               <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
-                <div className="text-xs font-semibold text-zinc-500">Step 2</div>
-                <div className="mt-1 text-sm font-bold text-zinc-900">
-                  Send a manual push test
-                </div>
-                <div className="mt-2 text-sm text-zinc-600">
-                  Verify end-to-end delivery locally and in Vercel before automatic alert-driven pushes.
+                <div className="text-xs font-semibold text-zinc-500">Manual delivery test</div>
+                <div className="mt-1 text-sm text-zinc-900">
+                  Send a manual push to confirm subscription, storage, and delivery are working correctly.
                 </div>
                 <div className="mt-4">
                   <TestPushButton />
@@ -423,9 +392,7 @@ export default function AdminDashboardPage() {
             </div>
 
             <div className="border-t border-zinc-200 px-5 py-4 text-xs text-zinc-500">
-              Test flow: subscribe in this browser, then send a manual push. If this works
-              here, your alert-triggered push pipeline uses the same delivery path on localhost
-              and on the deployed Vercel app.
+              Subscribe with the bell button first, then send a manual push test.
             </div>
           </Panel>
         </div>
@@ -544,6 +511,44 @@ export default function AdminDashboardPage() {
 
           <div className="grid grid-cols-1 gap-5">
             <Panel
+              title="Quick Actions"
+              subtitle="Shortcuts to the current admin and operational tools."
+            >
+              <div className="grid grid-cols-1 gap-3 p-5">
+                <Link href="/dashboard/admin/sensors" className={actionButtonClasses()}>
+                  Manage Sensors
+                </Link>
+
+                <Link href="/dashboard/admin/events" className={actionButtonClasses()}>
+                  Open Rain Events
+                </Link>
+
+                <Link href="/dashboard/admin/alerts" className={actionButtonClasses()}>
+                  Open Alerts
+                </Link>
+
+                <Link href="/dashboard/sensor" className={actionButtonClasses()}>
+                  Open Sensor Dashboard
+                </Link>
+
+                <Link href="/dashboard" className={actionButtonClasses()}>
+                  View Public Dashboard
+                </Link>
+              </div>
+
+              <div className="border-t border-zinc-200 px-5 py-4">
+                <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
+                  <div className="text-xs font-semibold text-zinc-500">Admin roadmap</div>
+                  <div className="mt-2 space-y-1 text-sm text-zinc-700">
+                    <div>• Rain events monitoring</div>
+                    <div>• Alert history and acknowledgements</div>
+                    <div>• Push notification control</div>
+                    <div>• Public report review</div>
+                  </div>
+                </div>
+              </div>
+            </Panel>
+            <Panel
               title="Recent Feedback"
               subtitle="Latest public messages submitted through the feedback widget."
             >
@@ -593,59 +598,7 @@ export default function AdminDashboardPage() {
               </div>
             </Panel>
 
-            <Panel
-              title="Quick Actions"
-              subtitle="Shortcuts to the current admin and operational tools."
-            >
-              <div className="grid grid-cols-1 gap-3 p-5">
-                <Link
-                  href="/dashboard/admin/sensors"
-                  className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
-                >
-                  Manage Sensors
-                </Link>
-
-                <Link
-                  href="/dashboard/admin/events"
-                  className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
-                >
-                  Open Rain Events
-                </Link>
-
-                <Link
-                  href="/dashboard/admin/alerts"
-                  className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
-                >
-                  Open Alerts
-                </Link>
-
-                <Link
-                  href="/dashboard/sensor"
-                  className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
-                >
-                  Open Sensor Dashboard
-                </Link>
-
-                <Link
-                  href="/dashboard"
-                  className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
-                >
-                  View Public Dashboard
-                </Link>
-              </div>
-
-              <div className="border-t border-zinc-200 px-5 py-4">
-                <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
-                  <div className="text-xs font-semibold text-zinc-500">Admin roadmap</div>
-                  <div className="mt-2 space-y-1 text-sm text-zinc-700">
-                    <div>• Rain events monitoring</div>
-                    <div>• Alert history and acknowledgements</div>
-                    <div>• Push notification control</div>
-                    <div>• Public report review</div>
-                  </div>
-                </div>
-              </div>
-            </Panel>
+            
           </div>
         </div>
 
