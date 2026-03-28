@@ -1,5 +1,4 @@
 // app/api/data/route.ts
-
 import { NextResponse } from "next/server";
 import {
   getLatest,
@@ -42,6 +41,19 @@ type DbRow = {
   network_type: string | null;
 };
 
+type SensorRow = {
+  id: string;
+  is_active: boolean | null;
+};
+
+function parseBooleanParam(value: string | null, fallback: boolean) {
+  if (value == null) return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1") return true;
+  if (normalized === "false" || normalized === "0") return false;
+  return fallback;
+}
+
 function rowToSensorPoint(row: DbRow): SensorPoint | null {
   if (!row.ts) return null;
 
@@ -50,7 +62,7 @@ function rowToSensorPoint(row: DbRow): SensorPoint | null {
 
   return {
     ts: tsMs,
-    deviceId: row.device_id ?? "esp32-1",
+    deviceId: row.device_id ?? "unknown-device",
 
     rawDistCm: row.raw_dist_cm ?? -1,
     rawWaterCm: row.raw_water_cm,
@@ -79,38 +91,36 @@ function rowToSensorPoint(row: DbRow): SensorPoint | null {
   };
 }
 
+function baseReadingsQuery() {
+  return supabaseAdmin.from("sensor_readings").select(`
+    device_id,
+    ts,
+    raw_dist_cm,
+    raw_water_cm,
+    stable_water_cm,
+    us_valid,
+    accepted_for_stable,
+    overflow,
+    rain_ticks_total,
+    tips_60,
+    tips_300,
+    rain_rate_mmh_60,
+    rain_rate_mmh_300,
+    rssi_dbm,
+    dry_distance_cm,
+    flood_depth_cm,
+    vbat_v,
+    current_ma,
+    battery_percentage,
+    network_type
+  `);
+}
+
 async function getRecentFromSupabase(
   limit: number,
   deviceId?: string | null
 ): Promise<SensorPoint[] | null> {
-  let query = supabaseAdmin
-    .from("sensor_readings")
-    .select(
-      `
-      device_id,
-      ts,
-      raw_dist_cm,
-      raw_water_cm,
-      stable_water_cm,
-      us_valid,
-      accepted_for_stable,
-      overflow,
-      rain_ticks_total,
-      tips_60,
-      tips_300,
-      rain_rate_mmh_60,
-      rain_rate_mmh_300,
-      rssi_dbm,
-      dry_distance_cm,
-      flood_depth_cm,
-      vbat_v,
-      current_ma,
-      battery_percentage,
-      network_type
-      `
-    )
-    .order("ts", { ascending: false })
-    .limit(limit);
+  let query = baseReadingsQuery().order("ts", { ascending: false }).limit(limit);
 
   if (deviceId) {
     query = query.eq("device_id", deviceId);
@@ -119,7 +129,7 @@ async function getRecentFromSupabase(
   const { data, error } = await query;
 
   if (error) {
-    console.error("Supabase recent query error:", error);
+    console.error("[api/data] recent query error:", error);
     return null;
   }
 
@@ -129,54 +139,70 @@ async function getRecentFromSupabase(
     .sort((a, b) => a.ts - b.ts);
 }
 
-async function getLatestByAllDevicesFromSupabase(): Promise<Record<string, SensorPoint> | null> {
-  const { data, error } = await supabaseAdmin
-    .from("sensor_readings")
-    .select(
-      `
-      device_id,
-      ts,
-      raw_dist_cm,
-      raw_water_cm,
-      stable_water_cm,
-      us_valid,
-      accepted_for_stable,
-      overflow,
-      rain_ticks_total,
-      tips_60,
-      tips_300,
-      rain_rate_mmh_60,
-      rain_rate_mmh_300,
-      rssi_dbm,
-      dry_distance_cm,
-      flood_depth_cm,
-      vbat_v,
-      current_ma,
-      battery_percentage,
-      network_type
-      `
-    )
+async function getLatestForDeviceFromSupabase(
+  deviceId: string
+): Promise<SensorPoint | null> {
+  const { data, error } = await baseReadingsQuery()
+    .eq("device_id", deviceId)
     .order("ts", { ascending: false })
-    .limit(1000);
+    .limit(1);
 
   if (error) {
-    console.error("Supabase latestByDevice query error:", error);
+    console.error(`[api/data] latest query error for ${deviceId}:`, error);
     return null;
   }
 
-  const latestMap = new Map<string, SensorPoint>();
+  const row = (data ?? [])[0] as DbRow | undefined;
+  if (!row) return null;
 
-  for (const raw of data ?? []) {
-    const point = rowToSensorPoint(raw as DbRow);
-    if (!point) continue;
+  return rowToSensorPoint(row);
+}
 
-    const existing = latestMap.get(point.deviceId);
-    if (!existing || point.ts >= existing.ts) {
-      latestMap.set(point.deviceId, point);
+async function getActiveDeviceIdsFromSupabase(): Promise<string[] | null> {
+  const { data, error } = await supabaseAdmin
+    .from("sensors")
+    .select("id,is_active")
+    .eq("is_active", true);
+
+  if (error) {
+    console.error("[api/data] active sensors query error:", error);
+    return null;
+  }
+
+  return (data ?? [])
+    .map((row) => row as SensorRow)
+    .filter((row) => row.id)
+    .map((row) => row.id);
+}
+
+async function getLatestByAllDevicesFromSupabase(
+  targetDeviceId?: string | null
+): Promise<Record<string, SensorPoint> | null> {
+  const deviceIds =
+    targetDeviceId != null
+      ? [targetDeviceId]
+      : await getActiveDeviceIdsFromSupabase();
+
+  if (!deviceIds || deviceIds.length === 0) {
+    return {};
+  }
+
+  const settled = await Promise.all(
+    deviceIds.map(async (deviceId) => {
+      const point = await getLatestForDeviceFromSupabase(deviceId);
+      return { deviceId, point };
+    })
+  );
+
+  const out: Record<string, SensorPoint> = {};
+
+  for (const item of settled) {
+    if (item.point) {
+      out[item.deviceId] = item.point;
     }
   }
 
-  return Object.fromEntries(latestMap.entries());
+  return out;
 }
 
 export async function GET(req: Request) {
@@ -185,21 +211,33 @@ export async function GET(req: Request) {
   const limitRaw = searchParams.get("limit");
   const deviceId = searchParams.get("deviceId")?.trim() || null;
 
+  const includeRecent = parseBooleanParam(searchParams.get("includeRecent"), true);
+  const includeLatestByDevice = parseBooleanParam(
+    searchParams.get("includeLatestByDevice"),
+    true
+  );
+
   const limit = Number(limitRaw ?? "300");
   const safeLimit =
     Number.isFinite(limit) ? Math.max(1, Math.min(Math.floor(limit), 5000)) : 300;
 
-  const supabaseRecent = await getRecentFromSupabase(safeLimit, deviceId);
-  const supabaseLatestByDevice = await getLatestByAllDevicesFromSupabase();
+  const [supabaseRecent, supabaseLatestByDevice] = await Promise.all([
+    includeRecent ? getRecentFromSupabase(safeLimit, deviceId) : Promise.resolve([]),
+    includeLatestByDevice
+      ? getLatestByAllDevicesFromSupabase(deviceId)
+      : Promise.resolve({}),
+  ]);
 
-  if (supabaseRecent && supabaseLatestByDevice) {
-    const latest =
-      deviceId != null
-        ? supabaseLatestByDevice[deviceId] ??
-          (supabaseRecent.length ? supabaseRecent[supabaseRecent.length - 1] : null)
-        : supabaseRecent.length
-        ? supabaseRecent[supabaseRecent.length - 1]
-        : null;
+  if (supabaseRecent !== null && supabaseLatestByDevice !== null) {
+    let latest: SensorPoint | null = null;
+
+    if (deviceId != null) {
+      latest =
+        (supabaseLatestByDevice as Record<string, SensorPoint>)[deviceId] ??
+        (supabaseRecent.length ? supabaseRecent[supabaseRecent.length - 1] : null);
+    } else {
+      latest = supabaseRecent.length ? supabaseRecent[supabaseRecent.length - 1] : null;
+    }
 
     return NextResponse.json({
       latest,
@@ -210,10 +248,9 @@ export async function GET(req: Request) {
     });
   }
 
-  // Fallback to in-memory store
-  const recent = getRecent(safeLimit, deviceId);
+  const recent = includeRecent ? getRecent(safeLimit, deviceId) : [];
   const latest = deviceId ? getLatestByDevice(deviceId) : getLatest();
-  const latestByDevice = getLatestByAllDevices();
+  const latestByDevice = includeLatestByDevice ? getLatestByAllDevices() : {};
 
   return NextResponse.json({
     latest,

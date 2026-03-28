@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   clamp01,
   computeFloodRisk,
@@ -25,6 +25,7 @@ type Payload = {
   recent: SensorPoint[];
   latestByDevice?: Record<string, SensorPoint>;
   serverTime: number;
+  source?: "supabase" | "memory";
 };
 
 type FloodStatus = {
@@ -86,8 +87,8 @@ type NormalizedPoint = {
 };
 
 const STALE_MS = 15_000;
-const POLL_LATEST_MS = 1000;
-const POLL_LOGS_MS = 5000;
+const POLL_SUMMARY_MS = 2_000;
+const POLL_LOGS_MS = 7_000;
 const WX_POLL_MS = 60_000;
 
 const DEPTH_ON_CM = 5;
@@ -95,9 +96,35 @@ const RAIN_FULL_MMHR = 50;
 const DEPTH_FULL_CM = 30;
 const TAU_MIN = 60;
 const DEPTH_DAMP_BASE = 0.2;
-
-// Keep this aligned with your tipping-bucket calibration.
 const MM_PER_TIP = 0.27;
+
+const LOG_LIMIT_OPTIONS = [20, 50, 100, 200, 500];
+const MANILA_FORMATTER = new Intl.DateTimeFormat("en-PH", {
+  timeZone: "Asia/Manila",
+  year: "numeric",
+  month: "short",
+  day: "2-digit",
+  hour: "numeric",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
+function fmt(n: number | null, digits = 1) {
+  if (n == null || !Number.isFinite(n)) return "—";
+  return n.toFixed(digits);
+}
+
+function fmtInt(n: number | null) {
+  if (n == null || !Number.isFinite(n)) return "—";
+  return String(Math.round(n));
+}
+
+function fmtTime(tsMs: number | null) {
+  if (!tsMs) return "—";
+  const d = new Date(tsMs);
+  if (Number.isNaN(d.getTime())) return "—";
+  return MANILA_FORMATTER.format(d);
+}
 
 function classifyFloodCm(depthCm: number, overflow = false): FloodStatus {
   if (overflow || depthCm >= 30) {
@@ -121,72 +148,6 @@ function classifyRainMmHr(mmHr: number): RainStatus {
   if (x < 15) return { label: "HEAVY", note: "7.5–15 mm/hr", mmHr: x };
   if (x < 30) return { label: "VERY HEAVY", note: "15–30 mm/hr", mmHr: x };
   return { label: "EXTREME", note: "≥ 30 mm/hr", mmHr: x };
-}
-
-function fmt(n: number | null, digits = 1) {
-  if (n == null || !Number.isFinite(n)) return "—";
-  return n.toFixed(digits);
-}
-
-function fmtInt(n: number | null) {
-  if (n == null || !Number.isFinite(n)) return "—";
-  return String(Math.round(n));
-}
-
-function fmtTime(tsMs: number | null) {
-  if (!tsMs) return "—";
-  const d = new Date(tsMs);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString();
-}
-
-function statusBadgeClasses(label: FloodStatus["label"]) {
-  switch (label) {
-    case "DANGER":
-      return "bg-red-600 text-white";
-    case "WARNING":
-      return "bg-amber-600 text-white";
-    case "WATCH":
-      return "bg-blue-600 text-white";
-    default:
-      return "bg-emerald-700 text-white";
-  }
-}
-
-function rainBadgeClasses(label: RainStatus["label"]) {
-  switch (label) {
-    case "EXTREME":
-      return "bg-red-700 text-white";
-    case "VERY HEAVY":
-      return "bg-red-600 text-white";
-    case "HEAVY":
-      return "bg-amber-600 text-white";
-    case "MODERATE":
-      return "bg-blue-600 text-white";
-    case "LIGHT":
-      return "bg-sky-700 text-white";
-    default:
-      return "bg-zinc-700 text-white";
-  }
-}
-
-function pillClasses(tone: "ok" | "warn" | "bad" | "neutral") {
-  switch (tone) {
-    case "ok":
-      return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200";
-    case "warn":
-      return "bg-amber-50 text-amber-800 ring-1 ring-amber-200";
-    case "bad":
-      return "bg-red-50 text-red-800 ring-1 ring-red-200";
-    default:
-      return "bg-zinc-50 text-zinc-700 ring-1 ring-zinc-200";
-  }
-}
-
-function riskToneClasses(risk: number) {
-  if (risk <= 0.3) return "text-emerald-700";
-  if (risk <= 0.6) return "text-amber-700";
-  return "text-red-700";
 }
 
 function normalizePoint(p: SensorPoint | null, nowMs: number): NormalizedPoint | null {
@@ -226,28 +187,148 @@ function normalizePoint(p: SensorPoint | null, nowMs: number): NormalizedPoint |
   };
 }
 
+function badgeToneClasses(tone: "ok" | "warn" | "bad" | "neutral") {
+  switch (tone) {
+    case "ok":
+      return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200";
+    case "warn":
+      return "bg-amber-50 text-amber-800 ring-1 ring-amber-200";
+    case "bad":
+      return "bg-red-50 text-red-800 ring-1 ring-red-200";
+    default:
+      return "bg-zinc-50 text-zinc-700 ring-1 ring-zinc-200";
+  }
+}
+
+function floodBadgeClasses(label: FloodStatus["label"]) {
+  switch (label) {
+    case "DANGER":
+      return "bg-red-600 text-white";
+    case "WARNING":
+      return "bg-amber-600 text-white";
+    case "WATCH":
+      return "bg-blue-600 text-white";
+    default:
+      return "bg-emerald-700 text-white";
+  }
+}
+
+function rainBadgeClasses(label: RainStatus["label"]) {
+  switch (label) {
+    case "EXTREME":
+      return "bg-red-700 text-white";
+    case "VERY HEAVY":
+      return "bg-red-600 text-white";
+    case "HEAVY":
+      return "bg-amber-600 text-white";
+    case "MODERATE":
+      return "bg-blue-600 text-white";
+    case "LIGHT":
+      return "bg-sky-700 text-white";
+    default:
+      return "bg-zinc-700 text-white";
+  }
+}
+
+function riskToneClasses(risk: number) {
+  if (risk <= 0.3) return "text-emerald-700";
+  if (risk <= 0.6) return "text-amber-700";
+  return "text-red-700";
+}
+
+function SectionCard({
+  title,
+  subtitle,
+  action,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-2xl border border-zinc-200 bg-white shadow-sm">
+      <div className="flex items-start justify-between gap-3 border-b border-zinc-200 px-4 py-4 sm:px-5">
+        <div className="min-w-0">
+          <div className="text-base font-extrabold text-zinc-900">{title}</div>
+          {subtitle ? <div className="mt-1 text-xs text-zinc-500">{subtitle}</div> : null}
+        </div>
+        {action ? <div className="shrink-0">{action}</div> : null}
+      </div>
+      <div className="p-4 sm:p-5">{children}</div>
+    </section>
+  );
+}
+
+function MetricTile({
+  label,
+  value,
+  detail,
+  tone = "default",
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+  tone?: "default" | "ok" | "warn" | "bad";
+}) {
+  const toneClass =
+    tone === "ok"
+      ? "text-emerald-700"
+      : tone === "warn"
+      ? "text-amber-700"
+      : tone === "bad"
+      ? "text-red-700"
+      : "text-zinc-900";
+
+  return (
+    <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
+      <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+        {label}
+      </div>
+      <div className={`mt-2 text-2xl font-extrabold tracking-tight ${toneClass}`}>
+        {value}
+      </div>
+      {detail ? <div className="mt-2 text-xs text-zinc-500">{detail}</div> : null}
+    </div>
+  );
+}
+
 export default function SensorDashboardPage() {
   const [sensorRecords, setSensorRecords] = useState<SensorRecord[]>([]);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
+  const [selectedDeviceId, setSelectedDeviceId] = useState("");
+  const [logsDeviceId, setLogsDeviceId] = useState("");
   const [forecastHorizon, setForecastHorizon] = useState<ForecastHorizon>("now");
+  const [logsLimit, setLogsLimit] = useState(100);
 
   const [latestByDevice, setLatestByDevice] = useState<Record<string, SensorPoint>>({});
   const [recentRaw, setRecentRaw] = useState<SensorPoint[]>([]);
-  const [loading, setLoading] = useState(true);
+
   const [sensorLoading, setSensorLoading] = useState(true);
-  const [error, setError] = useState<string>("");
-
+  const [summaryLoading, setSummaryLoading] = useState(true);
+  const [summaryError, setSummaryError] = useState("");
+  const [weatherLoading, setWeatherLoading] = useState(false);
   const [weather, setWeather] = useState<WeatherPayload | null>(null);
-  const [weatherError, setWeatherError] = useState<string>("");
+  const [weatherError, setWeatherError] = useState("");
+  const [logsLoading, setLogsLoading] = useState(false);
 
-  const [lastFetchAt, setLastFetchAt] = useState<number>(0);
+  const [lastFetchAt, setLastFetchAt] = useState(0);
+  const [clockMs, setClockMs] = useState(0);
+  const [rainMemory, setRainMemory] = useState(0);
   const [showLogs, setShowLogs] = useState(false);
 
-  const [rainMemory, setRainMemory] = useState(0);
   const lastRainUpdateRef = useRef<number | null>(null);
-
-  const inFlightLatestRef = useRef(false);
+  const inFlightSummaryRef = useRef(false);
   const inFlightLogsRef = useRef(false);
+  const inFlightWeatherRef = useRef(false);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setClockMs(Date.now());
+    }, 1000);
+    setClockMs(Date.now());
+    return () => window.clearInterval(id);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -256,28 +337,34 @@ export default function SensorDashboardPage() {
       try {
         setSensorLoading(true);
         const rows = await listSensors();
-
         if (cancelled) return;
 
         const activeRows = rows.filter((s) => s.is_active);
         setSensorRecords(activeRows);
 
+        const firstId = activeRows[0]?.id ?? "";
+
         setSelectedDeviceId((prev) => {
           if (prev && activeRows.some((s) => s.id === prev)) return prev;
-          return activeRows[0]?.id ?? "";
+          return firstId;
+        });
+
+        setLogsDeviceId((prev) => {
+          if (prev && activeRows.some((s) => s.id === prev)) return prev;
+          return firstId;
         });
       } catch (err) {
-        console.error("Failed to load sensors:", err);
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load sensors.");
+          setSummaryError(
+            err instanceof Error ? err.message : "Failed to load sensors."
+          );
         }
       } finally {
         if (!cancelled) setSensorLoading(false);
       }
     }
 
-    loadSensorsFromDb();
-
+    void loadSensorsFromDb();
     return () => {
       cancelled = true;
     };
@@ -299,39 +386,24 @@ export default function SensorDashboardPage() {
     [sensors, selectedDeviceId]
   );
 
-  function downloadFile(url: string) {
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  }
+  const selectedLogsSensor = useMemo(
+    () => sensors.find((s) => s.id === logsDeviceId) ?? sensors[0] ?? null,
+    [sensors, logsDeviceId]
+  );
 
-  function handleDownloadCsv() {
-    if (!selectedDeviceId) return;
-    const url = `/api/report/export?deviceId=${encodeURIComponent(
-      selectedDeviceId
-    )}&format=csv&limit=5000`;
-    downloadFile(url);
-  }
+  const nowMs = lastFetchAt || clockMs || Date.now();
 
-  function handleDownloadJson() {
-    if (!selectedDeviceId) return;
-    const url = `/api/report/export?deviceId=${encodeURIComponent(
-      selectedDeviceId
-    )}&format=json&limit=5000`;
-    downloadFile(url);
-  }
-
-  async function loadLatestOnly() {
-    if (!selectedDeviceId || inFlightLatestRef.current) return;
-    inFlightLatestRef.current = true;
+  const loadSummary = useCallback(async () => {
+    if (!selectedDeviceId || inFlightSummaryRef.current) return;
+    inFlightSummaryRef.current = true;
 
     try {
-      const res = await fetch(`/api/data?limit=600&t=${Date.now()}`, {
-        cache: "no-store",
-      });
+      const res = await fetch(
+        `/api/data?deviceId=${encodeURIComponent(
+          selectedDeviceId
+        )}&limit=1&includeRecent=false&includeLatestByDevice=true&t=${Date.now()}`,
+        { cache: "no-store" }
+      );
 
       if (!res.ok) {
         const text = await res.text();
@@ -339,66 +411,54 @@ export default function SensorDashboardPage() {
       }
 
       const json: Payload = await res.json();
-
       setLatestByDevice(json.latestByDevice ?? {});
-      setRecentRaw(Array.isArray(json.recent) ? json.recent : []);
-      setError("");
+      setSummaryError("");
       setLastFetchAt(json.serverTime ?? Date.now());
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Unknown error";
-      setError(msg);
+    } catch (err) {
+      setSummaryError(
+        err instanceof Error ? err.message : "Failed to load latest data."
+      );
     } finally {
-      setLoading(false);
-      inFlightLatestRef.current = false;
+      setSummaryLoading(false);
+      inFlightSummaryRef.current = false;
     }
-  }
+  }, [selectedDeviceId]);
 
-  async function loadLogs() {
-    if (!selectedDeviceId || inFlightLogsRef.current) return;
+  const loadLogs = useCallback(async () => {
+    if (!logsDeviceId || inFlightLogsRef.current) return;
     inFlightLogsRef.current = true;
 
     try {
-      const res = await fetch(`/api/data?limit=600&t=${Date.now()}`, {
-        cache: "no-store",
-      });
+      setLogsLoading(true);
+      const res = await fetch(
+        `/api/data?deviceId=${encodeURIComponent(
+          logsDeviceId
+        )}&limit=${logsLimit}&includeRecent=true&includeLatestByDevice=false&t=${Date.now()}`,
+        { cache: "no-store" }
+      );
 
-      if (!res.ok) return;
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`API ${res.status}: ${text}`);
+      }
 
       const json: Payload = await res.json();
       setRecentRaw(Array.isArray(json.recent) ? json.recent : []);
-    } catch (e) {
-      console.error("Failed to load logs:", e);
+      setLastFetchAt((prev) => json.serverTime ?? prev);
+    } catch (err) {
+      console.error("Failed to load logs:", err);
     } finally {
+      setLogsLoading(false);
       inFlightLogsRef.current = false;
     }
-  }
+  }, [logsDeviceId, logsLimit]);
 
-  useEffect(() => {
-    if (!selectedDeviceId) return;
-
-    void loadLatestOnly();
-    const id = window.setInterval(() => {
-      void loadLatestOnly();
-    }, POLL_LATEST_MS);
-
-    return () => clearInterval(id);
-  }, [selectedDeviceId]);
-
-  useEffect(() => {
-    if (!showLogs || !selectedDeviceId) return;
-
-    void loadLogs();
-    const id = window.setInterval(() => {
-      void loadLogs();
-    }, POLL_LOGS_MS);
-
-    return () => clearInterval(id);
-  }, [showLogs, selectedDeviceId]);
-
-  async function loadWeather() {
-    if (!selectedSensor) return;
+  const loadWeather = useCallback(async () => {
+    if (!selectedSensor || inFlightWeatherRef.current) return;
+    inFlightWeatherRef.current = true;
 
     try {
+      setWeatherLoading(true);
       const res = await fetch(
         `/api/weather?lat=${selectedSensor.lat}&lng=${selectedSensor.lng}&t=${Date.now()}`,
         { cache: "no-store" }
@@ -413,12 +473,38 @@ export default function SensorDashboardPage() {
 
       setWeather(json.data);
       setWeatherError("");
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Unknown error";
+    } catch (err) {
       setWeather(null);
-      setWeatherError(msg);
+      setWeatherError(
+        err instanceof Error ? err.message : "Failed to load weather."
+      );
+    } finally {
+      setWeatherLoading(false);
+      inFlightWeatherRef.current = false;
     }
-  }
+  }, [selectedSensor]);
+
+  useEffect(() => {
+    if (!selectedDeviceId) return;
+
+    void loadSummary();
+    const id = window.setInterval(() => {
+      void loadSummary();
+    }, POLL_SUMMARY_MS);
+
+    return () => window.clearInterval(id);
+  }, [selectedDeviceId, loadSummary]);
+
+  useEffect(() => {
+    if (!showLogs || !logsDeviceId) return;
+
+    void loadLogs();
+    const id = window.setInterval(() => {
+      void loadLogs();
+    }, POLL_LOGS_MS);
+
+    return () => window.clearInterval(id);
+  }, [showLogs, logsDeviceId, logsLimit, loadLogs]);
 
   useEffect(() => {
     if (!selectedSensor) return;
@@ -428,30 +514,50 @@ export default function SensorDashboardPage() {
       void loadWeather();
     }, WX_POLL_MS);
 
-    return () => clearInterval(id);
-  }, [selectedSensor?.id]);
+    return () => window.clearInterval(id);
+  }, [selectedSensor, loadWeather]);
 
-  const nowMs = lastFetchAt || Date.now();
+  useEffect(() => {
+    const now = Date.now();
+    const last = lastRainUpdateRef.current;
+    lastRainUpdateRef.current = now;
+
+    const selectedLatestRaw =
+      selectedDeviceId && latestByDevice[selectedDeviceId]
+        ? latestByDevice[selectedDeviceId]
+        : null;
+    const rainMmHrCurrent = extractRainMmHr(selectedLatestRaw);
+    const rainFactorCurrent = clamp01(rainMmHrCurrent / RAIN_FULL_MMHR);
+
+    const rafId = window.requestAnimationFrame(() => {
+      setRainMemory((prev) => {
+        if (last == null) return rainFactorCurrent;
+        const dtMin = (now - last) / 60000;
+        const decay = Math.exp(-dtMin / TAU_MIN);
+        return Math.max(rainFactorCurrent, prev * decay);
+      });
+    });
+
+    return () => window.cancelAnimationFrame(rafId);
+  }, [selectedDeviceId, latestByDevice]);
 
   const selectedLatestRaw = useMemo(
     () => (selectedDeviceId ? latestByDevice[selectedDeviceId] ?? null : null),
-    [latestByDevice, selectedDeviceId]
+    [selectedDeviceId, latestByDevice]
   );
 
-  const latest = useMemo(() => {
-    return normalizePoint(selectedLatestRaw, nowMs);
-  }, [selectedLatestRaw, nowMs]);
+  const latest = useMemo(
+    () => normalizePoint(selectedLatestRaw, nowMs),
+    [selectedLatestRaw, nowMs]
+  );
 
   const recent = useMemo(() => {
-    if (!showLogs || !selectedDeviceId) return [] as NormalizedPoint[];
-
-    const filtered = recentRaw.filter((p) => p.deviceId === selectedDeviceId);
-    return filtered
+    return recentRaw
       .map((p) => normalizePoint(p, nowMs))
-      .filter((p): p is NormalizedPoint => p != null);
-  }, [recentRaw, selectedDeviceId, showLogs, nowMs]);
+      .filter((p): p is NormalizedPoint => p != null)
+      .sort((a, b) => (b.tsMs ?? 0) - (a.tsMs ?? 0));
+  }, [recentRaw, nowMs]);
 
-  // Canonical values now come from backend / DB.
   const floodDepthCmCurrent = useMemo(
     () => extractFloodDepthCm(selectedLatestRaw),
     [selectedLatestRaw]
@@ -464,31 +570,6 @@ export default function SensorDashboardPage() {
     () => isOverflow(selectedLatestRaw),
     [selectedLatestRaw]
   );
-
-  useEffect(() => {
-    const now = Date.now();
-    const last = lastRainUpdateRef.current;
-    lastRainUpdateRef.current = now;
-
-    const rainFactorCurrent = clamp01(rainMmHrCurrent / RAIN_FULL_MMHR);
-
-    const rafId = window.requestAnimationFrame(() => {
-      setRainMemory((prev) => {
-        if (last == null) {
-          return rainFactorCurrent;
-        }
-
-        const dtMin = (now - last) / 60000;
-        const decay = Math.exp(-dtMin / TAU_MIN);
-
-        return Math.max(rainFactorCurrent, prev * decay);
-      });
-    });
-
-    return () => {
-      window.cancelAnimationFrame(rafId);
-    };
-  }, [rainMmHrCurrent]);
 
   const currentRisk = useMemo(() => {
     return computeFloodRisk({
@@ -524,21 +605,15 @@ export default function SensorDashboardPage() {
     latestOverflow,
   ]);
 
-  const flood = useMemo(() => {
-    return classifyFloodCm(scenarioRisk.scenario.floodDepthCm, latestOverflow);
-  }, [scenarioRisk.scenario.floodDepthCm, latestOverflow]);
+  const flood = useMemo(
+    () => classifyFloodCm(scenarioRisk.scenario.floodDepthCm, latestOverflow),
+    [scenarioRisk.scenario.floodDepthCm, latestOverflow]
+  );
 
-  const rainStatus = useMemo(() => {
-    return classifyRainMmHr(rainMmHrCurrent);
-  }, [rainMmHrCurrent]);
-
-  const forecastDeltaDepth = useMemo(() => {
-    return scenarioRisk.scenario.floodDepthCm - currentRisk.scenario.floodDepthCm;
-  }, [scenarioRisk.scenario.floodDepthCm, currentRisk.scenario.floodDepthCm]);
-
-  const forecastDeltaRisk = useMemo(() => {
-    return scenarioRisk.dynamicRisk - currentRisk.dynamicRisk;
-  }, [scenarioRisk.dynamicRisk, currentRisk.dynamicRisk]);
+  const rainStatus = useMemo(
+    () => classifyRainMmHr(rainMmHrCurrent),
+    [rainMmHrCurrent]
+  );
 
   const dataQuality = useMemo(() => {
     if (!latest) {
@@ -565,15 +640,11 @@ export default function SensorDashboardPage() {
     const depthOn = scenarioRisk.scenario.floodDepthCm >= DEPTH_ON_CM;
     const overflowOn = latestOverflow;
 
-    if (overflowOn) {
-      return { on: true, reason: "Overflow detected" };
-    }
+    if (overflowOn) return { on: true, reason: "Overflow detected" };
     if (tipsOn && depthOn) {
       return { on: true, reason: "Raining now (tips60 > 0) + depth above threshold" };
     }
-    if (tipsOn) {
-      return { on: true, reason: "Raining now (tips60 > 0)" };
-    }
+    if (tipsOn) return { on: true, reason: "Raining now (tips60 > 0)" };
     if (depthOn) {
       return {
         on: true,
@@ -584,9 +655,15 @@ export default function SensorDashboardPage() {
     return { on: false, reason: "No rain tips and flood depth below threshold" };
   }, [latest, scenarioRisk.scenario.floodDepthCm, latestOverflow]);
 
-  const secondsSinceFetch = lastFetchAt
-    ? Math.floor((Date.now() - lastFetchAt) / 1000)
-    : null;
+  const forecastDeltaDepth = useMemo(
+    () => scenarioRisk.scenario.floodDepthCm - currentRisk.scenario.floodDepthCm,
+    [scenarioRisk.scenario.floodDepthCm, currentRisk.scenario.floodDepthCm]
+  );
+
+  const forecastDeltaRisk = useMemo(
+    () => scenarioRisk.dynamicRisk - currentRisk.dynamicRisk,
+    [scenarioRisk.dynamicRisk, currentRisk.dynamicRisk]
+  );
 
   const healthPills = useMemo(() => {
     const pills: Array<{ text: string; tone: "ok" | "warn" | "bad" | "neutral" }> = [];
@@ -596,22 +673,18 @@ export default function SensorDashboardPage() {
       text: latest.isStale ? "STALE" : "LIVE",
       tone: latest.isStale ? "warn" : "ok",
     });
-
     pills.push({
       text: latest.usValid === false ? "Ultrasonic invalid" : "Ultrasonic OK",
       tone: latest.usValid === false ? "warn" : "ok",
     });
-
     pills.push({
       text: latest.acceptedForStable === false ? "Spike ignored" : "Stable update OK",
       tone: latest.acceptedForStable === false ? "warn" : "ok",
     });
-
     pills.push({
       text: latest.overflow ? "Overflow / too close" : "No overflow",
       tone: latest.overflow ? "bad" : "ok",
     });
-
     pills.push({
       text: activation.on ? "Activation ON" : "Activation OFF",
       tone: activation.on ? "warn" : "neutral",
@@ -622,8 +695,6 @@ export default function SensorDashboardPage() {
         text: `Signal ${fmtInt(latest.rssiDbm)} dBm`,
         tone: latest.rssiDbm < -85 ? "warn" : "neutral",
       });
-    } else {
-      pills.push({ text: "Signal —", tone: "neutral" });
     }
 
     if (latest.batteryPercentage != null) {
@@ -673,31 +744,33 @@ export default function SensorDashboardPage() {
     };
   }, [latest, activation, rainStatus, flood, currentRisk, scenarioRisk, selectedSensor]);
 
-  if (sensorLoading || loading) {
+  if (sensorLoading || summaryLoading) {
     return (
-      <div className="mx-auto max-w-7xl px-4 py-8">
-        <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
-          <div className="text-sm text-zinc-500">Loading sensor dashboard…</div>
+      <div className="min-h-screen bg-zinc-50">
+        <div className="mx-auto max-w-7xl px-4 py-6">
+          <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
+            <div className="text-sm text-zinc-500">Loading sensor dashboard…</div>
+          </div>
         </div>
       </div>
     );
   }
 
-  if (error && sensors.length === 0) {
+  if (summaryError && sensors.length === 0) {
     return (
-      <div className="mx-auto max-w-7xl px-4 py-8">
-        <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
-          <div className="text-base font-extrabold">Error</div>
-          <div className="mt-2 text-sm text-zinc-700">{error}</div>
-          <button
-            className="mt-4 inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold shadow-sm hover:bg-zinc-50"
-            onClick={() => {
-              void loadLatestOnly();
-            }}
-            type="button"
-          >
-            Retry
-          </button>
+      <div className="min-h-screen bg-zinc-50">
+        <div className="mx-auto max-w-7xl px-4 py-6">
+          <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
+            <div className="text-base font-extrabold text-zinc-900">Error</div>
+            <div className="mt-2 text-sm text-zinc-700">{summaryError}</div>
+            <button
+              type="button"
+              onClick={() => void loadSummary()}
+              className="mt-4 rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
+            >
+              Retry
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -705,19 +778,21 @@ export default function SensorDashboardPage() {
 
   if (!selectedSensor) {
     return (
-      <div className="mx-auto max-w-7xl px-4 py-8">
-        <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
-          <div className="text-base font-extrabold text-zinc-900">No Active Sensors</div>
-          <div className="mt-2 text-sm text-zinc-700">
-            No active sensors were found in the database.
-          </div>
-          <div className="mt-4">
-            <Link
-              href="/dashboard/admin/sensors"
-              className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold shadow-sm hover:bg-zinc-50"
-            >
-              Open Admin Sensors
-            </Link>
+      <div className="min-h-screen bg-zinc-50">
+        <div className="mx-auto max-w-7xl px-4 py-6">
+          <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
+            <div className="text-base font-extrabold text-zinc-900">No Active Sensors</div>
+            <div className="mt-2 text-sm text-zinc-700">
+              No active sensors were found in the database.
+            </div>
+            <div className="mt-4">
+              <Link
+                href="/dashboard/admin/sensors"
+                className="rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
+              >
+                Open Admin Sensors
+              </Link>
+            </div>
           </div>
         </div>
       </div>
@@ -728,21 +803,34 @@ export default function SensorDashboardPage() {
 
   return (
     <div className="min-h-screen bg-zinc-50">
-      <div className="mx-auto max-w-7xl px-4 py-8">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <Link
-            href="/dashboard"
-            className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
-          >
-            ← Back to Dashboard
-          </Link>
+      <div className="mx-auto max-w-7xl px-3 py-4 sm:px-4 sm:py-6">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <Link
+              href="/dashboard"
+              className="rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
+            >
+              ← Back
+            </Link>
+            <button
+              type="button"
+              onClick={() => void loadSummary()}
+              className="rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
+            >
+              Refresh
+            </button>
+          </div>
 
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <label className="flex items-center gap-2 text-sm font-semibold text-zinc-700">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <label className="grid gap-1 text-sm font-semibold text-zinc-700">
               <span>Sensor</span>
               <select
                 value={selectedDeviceId}
-                onChange={(e) => setSelectedDeviceId(e.target.value)}
+                onChange={(e) => {
+                  const nextId = e.target.value;
+                  setSelectedDeviceId(nextId);
+                  setLogsDeviceId(nextId);
+                }}
                 className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-900 shadow-sm"
               >
                 {sensors.map((sensor) => (
@@ -753,7 +841,7 @@ export default function SensorDashboardPage() {
               </select>
             </label>
 
-            <label className="flex items-center gap-2 text-sm font-semibold text-zinc-700">
+            <label className="grid gap-1 text-sm font-semibold text-zinc-700">
               <span>Forecast</span>
               <select
                 value={forecastHorizon}
@@ -770,356 +858,269 @@ export default function SensorDashboardPage() {
           </div>
         </div>
 
-        <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+        <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-5">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
-            <div>
+            <div className="min-w-0">
               <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
                 Flood Monitoring
               </div>
-              <h1 className="mt-1 text-2xl font-extrabold tracking-tight text-zinc-900">
-                Sensor Dashboard — {selectedSensor.name}
+              <h1 className="mt-1 text-xl font-extrabold tracking-tight text-zinc-900 sm:text-2xl">
+                {selectedSensor.name}
               </h1>
-              <div className="mt-2 text-sm text-zinc-600">
-                <span className="font-semibold">Mode:</span>{" "}
-                {forecastHorizon === "now" ? "Live / Current" : `Forecast +${forecastHorizon}`}
-              </div>
-              <div className="mt-1 text-sm text-zinc-600">
-                <span className="font-semibold">Latest:</span> {fmtTime(latest?.tsMs ?? null)}
-                {secondsSinceFetch != null ? (
-                  <span className="text-zinc-500"> • Refreshed {secondsSinceFetch}s ago</span>
-                ) : null}
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-zinc-600">
+                <span>Zone: {selectedSensor.zoneLabel}</span>
+                <span>•</span>
+                <span>{forecastHorizon === "now" ? "Live / Current" : `Forecast +${forecastHorizon}`}</span>
+                <span>•</span>
+                <span>{fmtTime(latest?.tsMs ?? null)}</span>
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-3">
-              <div
-                className={`rounded-full px-4 py-2 text-xs font-extrabold ${statusBadgeClasses(
+            <div className="flex flex-wrap gap-2">
+              <span
+                className={`rounded-full px-3 py-2 text-xs font-extrabold ${floodBadgeClasses(
                   flood.label
                 )}`}
               >
                 {flood.label}
-                <span className="ml-2 font-semibold opacity-90">• {flood.note}</span>
-              </div>
-
-              <div
-                className={`rounded-full px-4 py-2 text-xs font-extrabold ${rainBadgeClasses(
+              </span>
+              <span
+                className={`rounded-full px-3 py-2 text-xs font-extrabold ${rainBadgeClasses(
                   rainStatus.label
                 )}`}
               >
                 RAIN {rainStatus.label}
-                <span className="ml-2 font-semibold opacity-90">• {rainStatus.note}</span>
-              </div>
-
+              </span>
               <span
-                className={`rounded-full px-4 py-2 text-xs font-extrabold ${pillClasses(
+                className={`rounded-full px-3 py-2 text-xs font-extrabold ${badgeToneClasses(
                   dataQuality.tone
                 )}`}
                 title={dataQuality.note}
               >
                 {dataQuality.label}
               </span>
+            </div>
+          </div>
 
+          {summaryError ? (
+            <div className="mt-3 rounded-xl bg-red-50 p-3 text-sm text-red-700 ring-1 ring-red-200">
+              {summaryError}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <MetricTile
+            label="Current Flood"
+            value={`${fmt(currentRisk.scenario.floodDepthCm, 1)} cm`}
+            detail={flood.note}
+            tone={flood.label === "DANGER" ? "bad" : flood.label === "WARNING" ? "warn" : "default"}
+          />
+          <MetricTile
+            label="Rain Rate (5m)"
+            value={
+              latest?.rainRateMmHr300 != null
+                ? `${fmt(latest.rainRateMmHr300, 1)} mm/hr`
+                : "—"
+            }
+            detail={rainStatus.note}
+            tone={rainStatus.label === "EXTREME" || rainStatus.label === "VERY HEAVY" ? "bad" : rainStatus.label === "HEAVY" ? "warn" : "default"}
+          />
+          <MetricTile
+            label="Scenario Depth"
+            value={`${fmt(scenarioRisk.scenario.floodDepthCm, 1)} cm`}
+            detail={
+              forecastHorizon === "now"
+                ? "Live mode"
+                : `Δ ${forecastDeltaDepth >= 0 ? "+" : ""}${fmt(forecastDeltaDepth, 1)} cm`
+            }
+            tone={forecastDeltaDepth > 0 ? "warn" : "default"}
+          />
+          <MetricTile
+            label="Scenario Risk"
+            value={scenarioRisk.dynamicRisk.toFixed(3)}
+            detail={getStageLabel(scenarioRisk.riskStage)}
+            tone={
+              scenarioRisk.dynamicRisk > 0.6
+                ? "bad"
+                : scenarioRisk.dynamicRisk > 0.3
+                ? "warn"
+                : "ok"
+            }
+          />
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.6fr_1fr]">
+          <SectionCard
+            title="Current vs Forecast Scenario"
+            subtitle="Important computations are retained: rain memory, current risk, scenario risk, flood stage, and activation."
+          >
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <MetricTile
+                label="Projected Rain"
+                value={
+                  forecastHorizon === "now"
+                    ? "—"
+                    : `${fmt(scenarioRisk.scenario.projectedRainMm, 1)} mm`
+                }
+                detail="Scenario accumulation if current rain persists"
+              />
+              <MetricTile
+                label="Stable Water"
+                value={stableCm != null ? `${fmt(stableCm, 1)} cm` : "—"}
+                detail={stableCm != null ? `${fmt(stableCm / 30.48, 2)} ft filtered` : "No stable value"}
+              />
+              <MetricTile
+                label="Activation"
+                value={activation.on ? "ON" : "OFF"}
+                detail={activation.reason}
+                tone={activation.on ? "warn" : "default"}
+              />
+              <MetricTile
+                label="Raw Distance"
+                value={latest?.rawDistCm != null ? `${fmt(latest.rawDistCm, 1)} cm` : "—"}
+                detail={
+                  latest?.dryDistanceCm != null
+                    ? `Dry distance ${fmt(latest.dryDistanceCm, 1)} cm`
+                    : selectedSensor.dryDistanceCm != null
+                    ? `Dry distance ${fmt(selectedSensor.dryDistanceCm, 1)} cm`
+                    : "No dry distance"
+                }
+              />
+              <MetricTile
+                label="Rain Memory"
+                value={rainMemory.toFixed(3)}
+                detail="Persistence memory used by the risk engine"
+              />
+              <MetricTile
+                label="Risk Delta"
+                value={
+                  forecastHorizon === "now"
+                    ? "—"
+                    : `${forecastDeltaRisk >= 0 ? "+" : ""}${forecastDeltaRisk.toFixed(3)}`
+                }
+                detail="Scenario risk minus current risk"
+                tone={forecastDeltaRisk > 0 ? "warn" : "default"}
+              />
+            </div>
+          </SectionCard>
+
+          <SectionCard
+            title="Sensor Health"
+            subtitle="Compact operational status for ultrasonic, overflow, signal, battery, and activation."
+          >
+            <div className="flex flex-wrap gap-2">
+              {healthPills.map((p) => (
+                <span
+                  key={p.text}
+                  className={`rounded-full px-3 py-1 text-xs font-bold ${badgeToneClasses(
+                    p.tone
+                  )}`}
+                >
+                  {p.text}
+                </span>
+              ))}
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+              <div className="rounded-xl bg-zinc-50 p-3 ring-1 ring-zinc-200">
+                <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                  Flood Status
+                </div>
+                <div className="mt-1 font-bold text-zinc-900">{flood.label}</div>
+                <div className="mt-1 text-xs text-zinc-500">{flood.note}</div>
+              </div>
+              <div className="rounded-xl bg-zinc-50 p-3 ring-1 ring-zinc-200">
+                <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                  Rain Status
+                </div>
+                <div className="mt-1 font-bold text-zinc-900">{rainStatus.label}</div>
+                <div className="mt-1 text-xs text-zinc-500">{rainStatus.note}</div>
+              </div>
+              <div className="rounded-xl bg-zinc-50 p-3 ring-1 ring-zinc-200">
+                <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                  Overflow
+                </div>
+                <div className="mt-1 font-bold text-zinc-900">{latestOverflow ? "Yes" : "No"}</div>
+              </div>
+              <div className="rounded-xl bg-zinc-50 p-3 ring-1 ring-zinc-200">
+                <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                  Latest Timestamp
+                </div>
+                <div className="mt-1 font-bold text-zinc-900">{fmtTime(latest?.tsMs ?? null)}</div>
+              </div>
+            </div>
+          </SectionCard>
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.3fr_1fr]">
+          <SectionCard
+            title="Weather"
+            subtitle={`${selectedSensor.name} • ${selectedSensor.lat.toFixed(5)}, ${selectedSensor.lng.toFixed(5)} • Asia/Manila`}
+            action={
               <button
-                className="inline-flex items-center rounded-xl border border-zinc-200 bg-gray-700 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-gray-800"
-                onClick={() => {
-                  void loadLatestOnly();
-                }}
                 type="button"
+                onClick={() => void loadWeather()}
+                className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-800 hover:bg-zinc-50"
               >
                 Refresh
               </button>
-
-              <button
-                className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
-                onClick={handleDownloadCsv}
-                type="button"
-              >
-                Download CSV
-              </button>
-
-              <button
-                className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
-                onClick={handleDownloadJson}
-                type="button"
-              >
-                Download JSON
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <div className="text-base font-extrabold text-zinc-900">Weather (Open-Meteo)</div>
-              <div className="mt-1 text-xs text-zinc-500">
-                {selectedSensor.name} • Location: {selectedSensor.lat.toFixed(5)},{" "}
-                {selectedSensor.lng.toFixed(5)} • Timezone: Asia/Manila
+            }
+          >
+            {weatherError ? (
+              <div className="rounded-xl bg-red-50 p-3 text-sm text-red-700 ring-1 ring-red-200">
+                {weatherError}
               </div>
-            </div>
-
-            <button
-              className="inline-flex items-center rounded-xl border border-zinc-200 bg-gray-700 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-gray-800"
-              onClick={() => {
-                void loadWeather();
-              }}
-              type="button"
-            >
-              Refresh
-            </button>
-          </div>
-
-          {weatherError ? (
-            <div className="mt-3 text-sm text-red-700">{weatherError}</div>
-          ) : !weather ? (
-            <div className="mt-3 text-sm text-zinc-600">Loading weather…</div>
-          ) : (
-            <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
-                <div className="text-xs font-semibold text-zinc-500">Current precipitation</div>
-                <div className="mt-1 text-2xl font-extrabold text-zinc-900">
-                  {weather.current.precipitation_mm == null
-                    ? "—"
-                    : `${weather.current.precipitation_mm.toFixed(1)} mm`}
-                </div>
-                <div className="mt-1 text-xs text-zinc-500">
-                  Updated: {new Date(weather.fetchedAt).toLocaleString()}
-                </div>
-              </div>
-
-              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
-                <div className="text-xs font-semibold text-zinc-500">Next 1 hour (forecast)</div>
-                <div className="mt-1 text-2xl font-extrabold text-zinc-900">
-                  {weather.hourly.precipitation_mm?.[0] != null
-                    ? `${Number(weather.hourly.precipitation_mm[0]).toFixed(1)} mm`
-                    : "—"}
-                </div>
-                <div className="mt-1 text-xs text-zinc-500">
-                  Probability:{" "}
-                  {weather.hourly.precip_prob?.[0] != null
-                    ? `${Math.round(weather.hourly.precip_prob[0])}%`
-                    : "—"}
-                </div>
-              </div>
-
-              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
-                <div className="text-xs font-semibold text-zinc-500">Next 3 hours (sum)</div>
-                <div className="mt-1 text-2xl font-extrabold text-zinc-900">
-                  {weather.hourly.precipitation_mm?.length >= 3
-                    ? `${(
-                        Number(weather.hourly.precipitation_mm[0] ?? 0) +
-                        Number(weather.hourly.precipitation_mm[1] ?? 0) +
-                        Number(weather.hourly.precipitation_mm[2] ?? 0)
-                      ).toFixed(1)} mm`
-                    : "—"}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-3">
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm xl:col-span-2">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-              <div>
-                <div className="text-base font-extrabold text-zinc-900">Current vs forecast scenario</div>
-                <div className="mt-1 text-sm text-zinc-600">
-                  Forecast uses the same persistence-aware risk engine as the live flood map.
-                </div>
-              </div>
-
-              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
-                <div className="text-xs font-semibold text-zinc-500">Scenario mode</div>
-                <div className="mt-1 text-lg font-extrabold text-zinc-900">
-                  {forecastHorizon === "now" ? "Live / Current" : `Forecast +${forecastHorizon}`}
-                </div>
-                <div className="mt-1 text-xs text-zinc-500">
-                  Rain memory: {rainMemory.toFixed(3)}
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
-                <div className="text-xs font-semibold text-zinc-500">5-minute rain rate</div>
-                <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
-                  {latest?.rainRateMmHr300 != null ? `${fmt(latest.rainRateMmHr300, 1)} mm/hr` : "—"}
-                </div>
-                <div className="mt-2 text-sm text-zinc-500">
-                  Live measured intensity. This is not projected upward by horizon.
-                </div>
-              </div>
-
-              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
-                <div className="text-xs font-semibold text-zinc-500">Projected rain total</div>
-                <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
-                  {forecastHorizon === "now"
-                    ? "—"
-                    : `${fmt(scenarioRisk.scenario.projectedRainMm, 1)} mm`}
-                </div>
-                <div className="mt-2 text-sm text-zinc-500">
-                  Scenario accumulation if current intensity persists.
-                </div>
-              </div>
-
-              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
-                <div className="text-xs font-semibold text-zinc-500">Stable water level</div>
-                <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
-                  {stableCm != null ? `${fmt(stableCm / 30.48, 2)} ft` : "—"}
-                </div>
-                <div className="mt-2 text-sm text-zinc-500">
-                  {stableCm != null ? `${fmt(stableCm, 1)} cm (filtered)` : "—"}
-                </div>
-              </div>
-
-              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
-                <div className="text-xs font-semibold text-zinc-500">Current flood depth</div>
-                <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
-                  {fmt(currentRisk.scenario.floodDepthCm, 1)} cm
-                </div>
-                <div className="mt-2 text-sm text-zinc-500">
-                  RawDist: {latest?.rawDistCm != null ? `${fmt(latest.rawDistCm, 1)} cm` : "—"} •
-                  DryDist:{" "}
-                  {latest?.dryDistanceCm != null
-                    ? `${fmt(latest.dryDistanceCm, 1)} cm`
-                    : selectedSensor.dryDistanceCm != null
-                    ? `${fmt(selectedSensor.dryDistanceCm, 1)} cm`
-                    : "—"}
-                </div>
-              </div>
-
-              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
-                <div className="text-xs font-semibold text-zinc-500">Scenario flood depth</div>
-                <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
-                  {fmt(scenarioRisk.scenario.floodDepthCm, 1)} cm
-                </div>
-                <div className="mt-2 text-sm text-zinc-500">
-                  Δ depth:{" "}
-                  <span className={forecastDeltaDepth > 0 ? "font-bold text-red-700" : "font-bold text-zinc-700"}>
-                    {forecastHorizon === "now"
+            ) : weatherLoading && !weather ? (
+              <div className="text-sm text-zinc-600">Loading weather…</div>
+            ) : !weather ? (
+              <div className="text-sm text-zinc-600">No weather data.</div>
+            ) : (
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                <MetricTile
+                  label="Current Precipitation"
+                  value={
+                    weather.current.precipitation_mm == null
                       ? "—"
-                      : `${forecastDeltaDepth >= 0 ? "+" : ""}${fmt(forecastDeltaDepth, 1)} cm`}
-                  </span>
-                </div>
+                      : `${weather.current.precipitation_mm.toFixed(1)} mm`
+                  }
+                  detail={`Updated ${fmtTime(weather.fetchedAt)}`}
+                />
+                <MetricTile
+                  label="Next 1 Hour"
+                  value={
+                    weather.hourly.precipitation_mm?.[0] != null
+                      ? `${Number(weather.hourly.precipitation_mm[0]).toFixed(1)} mm`
+                      : "—"
+                  }
+                  detail={
+                    weather.hourly.precip_prob?.[0] != null
+                      ? `Probability ${Math.round(weather.hourly.precip_prob[0])}%`
+                      : "Probability —"
+                  }
+                />
+                <MetricTile
+                  label="Next 3 Hours"
+                  value={
+                    weather.hourly.precipitation_mm?.length >= 3
+                      ? `${(
+                          Number(weather.hourly.precipitation_mm[0] ?? 0) +
+                          Number(weather.hourly.precipitation_mm[1] ?? 0) +
+                          Number(weather.hourly.precipitation_mm[2] ?? 0)
+                        ).toFixed(1)} mm`
+                      : "—"
+                  }
+                  detail="Open-Meteo sum"
+                />
               </div>
+            )}
+          </SectionCard>
 
-              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
-                <div className="text-xs font-semibold text-zinc-500">Map activation</div>
-                <div className="mt-2 text-3xl font-extrabold tracking-tight text-zinc-900">
-                  {activation.on ? "ON" : "OFF"}
-                </div>
-                <div className="mt-2 text-sm text-zinc-500">{activation.reason}</div>
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-            <div className="text-base font-extrabold text-zinc-900">Risk engine</div>
-            <div className="mt-4 space-y-4">
-              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
-                <div className="text-xs font-semibold text-zinc-500">Current risk</div>
-                <div className={`mt-2 text-3xl font-extrabold tracking-tight ${riskToneClasses(currentRisk.dynamicRisk)}`}>
-                  {currentRisk.dynamicRisk.toFixed(3)}
-                </div>
-                <div className="mt-1 text-sm text-zinc-500">
-                  Stage: {getStageLabel(currentRisk.riskStage)}
-                </div>
-              </div>
-
-              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
-                <div className="text-xs font-semibold text-zinc-500">Scenario risk</div>
-                <div className={`mt-2 text-3xl font-extrabold tracking-tight ${riskToneClasses(scenarioRisk.dynamicRisk)}`}>
-                  {scenarioRisk.dynamicRisk.toFixed(3)}
-                </div>
-                <div className="mt-1 text-sm text-zinc-500">
-                  Stage: {getStageLabel(scenarioRisk.riskStage)}
-                </div>
-                <div className="mt-2 text-sm text-zinc-500">
-                  Δ risk:{" "}
-                  <span className={forecastDeltaRisk > 0 ? "font-bold text-red-700" : "font-bold text-zinc-700"}>
-                    {forecastHorizon === "now"
-                      ? "—"
-                      : `${forecastDeltaRisk >= 0 ? "+" : ""}${forecastDeltaRisk.toFixed(3)}`}
-                  </span>
-                </div>
-              </div>
-
-              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200">
-                <div className="text-xs font-semibold text-zinc-500">Computation details</div>
-                <div className="mt-2 space-y-1 text-xs text-zinc-700">
-                  <div>
-                    Current rain factor: <span className="font-bold">{currentRisk.rainFactor.toFixed(3)}</span>
-                  </div>
-                  <div>
-                    Current depth factor: <span className="font-bold">{currentRisk.depthFactor.toFixed(3)}</span>
-                  </div>
-                  <div>
-                    Current effective depth: <span className="font-bold">{currentRisk.effectiveDepthFactor.toFixed(3)}</span>
-                  </div>
-                  <div className="pt-2">
-                    Scenario rain factor: <span className="font-bold">{scenarioRisk.rainFactor.toFixed(3)}</span>
-                  </div>
-                  <div>
-                    Scenario depth factor: <span className="font-bold">{scenarioRisk.depthFactor.toFixed(3)}</span>
-                  </div>
-                  <div>
-                    Scenario effective depth: <span className="font-bold">{scenarioRisk.effectiveDepthFactor.toFixed(3)}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm lg:col-span-2">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <div className="text-base font-extrabold text-zinc-900">Sensor health</div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {healthPills.map((p) => (
-                    <span
-                      key={p.text}
-                      className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold ${pillClasses(
-                        p.tone
-                      )}`}
-                    >
-                      {p.text}
-                    </span>
-                  ))}
-                </div>
-
-                <div className="mt-3 text-xs text-zinc-500">
-                  Notes: <span className="font-semibold">STALE</span> means the device is not
-                  sending recent records. Activation uses{" "}
-                  <span className="font-semibold">tips60</span> or{" "}
-                  <span className="font-semibold">flood depth ≥ {DEPTH_ON_CM} cm</span>.
-                </div>
-              </div>
-
-              <div className="rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200 sm:min-w-[320px]">
-                <div className="text-xs font-semibold text-zinc-500">Status snapshot</div>
-                <div className="mt-2 space-y-2 text-xs text-zinc-700">
-                  <div>
-                    Flood status: <span className="font-bold">{flood.label}</span>
-                  </div>
-                  <div>
-                    Rain status: <span className="font-bold">{rainStatus.label}</span>
-                  </div>
-                  <div>
-                    Overflow: <span className="font-bold">{latestOverflow ? "Yes" : "No"}</span>
-                  </div>
-                  <div>
-                    Latest timestamp: <span className="font-bold">{fmtTime(latest?.tsMs ?? null)}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-            <div className="text-base font-extrabold text-zinc-900">Rain details</div>
-            <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
+          <SectionCard
+            title="Rain Details"
+            subtitle={`Tipping bucket calibration retained at ${MM_PER_TIP} mm/tip.`}
+          >
+            <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
               <dt className="text-zinc-500">Tips (60s)</dt>
               <dd className="text-right font-bold text-zinc-900">{fmtInt(latest?.tips60 ?? null)}</dd>
 
@@ -1148,7 +1149,7 @@ export default function SensorDashboardPage() {
                   : "—"}
               </dd>
 
-              <dt className="text-zinc-500">Total ticks</dt>
+              <dt className="text-zinc-500">Total Ticks</dt>
               <dd className="text-right font-bold text-zinc-900">
                 {fmtInt(latest?.rainTicksTotal ?? null)}
               </dd>
@@ -1164,29 +1165,21 @@ export default function SensorDashboardPage() {
               </dd>
 
               <dt className="text-zinc-500">Network</dt>
-              <dd className="text-right font-bold text-zinc-900">
-                {latest?.networkType ?? "—"}
-              </dd>
+              <dd className="text-right font-bold text-zinc-900">{latest?.networkType ?? "—"}</dd>
             </dl>
 
             <div className="mt-3 text-xs text-zinc-500">
-              Calibration: {MM_PER_TIP} mm/tip (tipping bucket). Forecast uses projected rainfall total, not a fake projected 5-minute intensity.
+              Forecast mode uses projected rainfall total and the same risk engine.
+              It does not fake a projected 5-minute rate.
             </div>
-          </div>
+          </SectionCard>
         </div>
 
-        <div className="mt-6 rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="text-base font-extrabold text-zinc-900">Report summary</div>
-              <div className="mt-1 text-xs text-zinc-500">
-                Summary for {selectedSensor.name} under{" "}
-                {forecastHorizon === "now" ? "live conditions" : `forecast ${forecastHorizon}`}.
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-4 space-y-2 text-sm text-zinc-800">
+        <SectionCard
+          title="Report Summary"
+          subtitle={`Summary for ${selectedSensor.name} under ${forecastHorizon === "now" ? "live conditions" : `forecast ${forecastHorizon}`}.`}
+        >
+          <div className="grid gap-2 text-sm text-zinc-800">
             <div>• {reportSummary.freshness}</div>
             <div>• {reportSummary.rain}</div>
             <div>• {reportSummary.depth}</div>
@@ -1194,135 +1187,207 @@ export default function SensorDashboardPage() {
             <div>• {reportSummary.waterStatus}</div>
             <div>• {reportSummary.risk}</div>
           </div>
-        </div>
+        </SectionCard>
 
-        <div className="mt-6 rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="text-base font-extrabold text-zinc-900">Raw Records</div>
-              <div className="mt-1 text-xs text-zinc-500">
-                {selectedSensor.name} • newest first • when enabled, shows last 120 rows
-              </div>
-            </div>
-
+        <SectionCard
+          title="Raw Records"
+          subtitle="Choose a sensor and row count for database-backed raw logs."
+          action={
             <button
-              className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-gray-700 shadow-sm hover:bg-zinc-50"
-              onClick={() => setShowLogs((v) => !v)}
               type="button"
+              onClick={() => setShowLogs((v) => !v)}
+              className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-800 hover:bg-zinc-50"
             >
-              {showLogs ? "Hide logs" : "Show logs"}
+              {showLogs ? "Hide Logs" : "Show Logs"}
             </button>
+          }
+        >
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <label className="grid gap-1 text-sm font-semibold text-zinc-700">
+              <span>Logs Sensor</span>
+              <select
+                value={logsDeviceId}
+                onChange={(e) => setLogsDeviceId(e.target.value)}
+                className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-900 shadow-sm"
+              >
+                {sensors.map((sensor) => (
+                  <option key={sensor.id} value={sensor.id}>
+                    {sensor.name} — {sensor.zoneLabel}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="grid gap-1 text-sm font-semibold text-zinc-700">
+              <span>Rows</span>
+              <select
+                value={logsLimit}
+                onChange={(e) => setLogsLimit(Number(e.target.value))}
+                className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-900 shadow-sm"
+              >
+                {LOG_LIMIT_OPTIONS.map((n) => (
+                  <option key={n} value={n}>
+                    {n} rows
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="grid gap-1 text-sm font-semibold text-zinc-700">
+              <span>Quick Sync</span>
+              <button
+                type="button"
+                onClick={() => setLogsDeviceId(selectedDeviceId)}
+                className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
+              >
+                Use Main Sensor
+              </button>
+            </div>
           </div>
 
           {!showLogs ? (
             <div className="mt-4 text-sm text-zinc-600">
-              Logs hidden for performance. Click <span className="font-semibold">Show logs</span>{" "}
-              when needed.
+              Logs are hidden by default for performance. Open them only when needed.
+            </div>
+          ) : recent.length === 0 && !logsLoading ? (
+            <div className="mt-4 text-sm text-zinc-600">
+              No logs found for {selectedLogsSensor?.name ?? "this sensor"}.
             </div>
           ) : (
-            <div className="mt-4 overflow-x-auto">
-              <table className="min-w-[1300px] w-full border-collapse text-left text-xs">
-                <thead>
-                  <tr className="text-gray-900">
-                    {[
-                      "Time",
-                      "Stale",
-                      "Tips60",
-                      "Rain60(mm)",
-                      "Rate60",
-                      "Tips300",
-                      "Rain300(mm)",
-                      "Rate300",
-                      "FloodDepth(cm)",
-                      "rawDist(cm)",
-                      "usValid",
-                      "accepted",
-                      "overflow",
-                      "Battery",
-                      "RSSI",
-                      "Activated",
-                    ].map((h) => (
-                      <th
-                        key={h}
-                        className="whitespace-nowrap border-b border-zinc-200 px-3 py-3 font-semibold"
+            <>
+              <div className="mt-4 md:hidden space-y-3">
+                {logsLoading && recent.length === 0 ? (
+                  <div className="text-sm text-zinc-600">Loading logs…</div>
+                ) : (
+                  recent.map((p, idx) => {
+                    const rowActivated =
+                      !p.isStale &&
+                      (Boolean(p.overflow) ||
+                        (p.tips60 ?? 0) > 0 ||
+                        (p.floodDepthCm ?? 0) >= DEPTH_ON_CM);
+
+                    return (
+                      <div
+                        key={`${p.tsMs ?? "no-ts"}-${idx}`}
+                        className="rounded-xl border border-zinc-200 bg-zinc-50 p-3"
                       >
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="text-sm font-bold text-zinc-900">
+                            {fmtTime(p.tsMs)}
+                          </div>
+                          <span
+                            className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${badgeToneClasses(
+                              p.isStale ? "warn" : "ok"
+                            )}`}
+                          >
+                            {p.isStale ? "STALE" : "LIVE"}
+                          </span>
+                        </div>
 
-                <tbody>
-                  {[...recent]
-                    .slice(-120)
-                    .reverse()
-                    .map((p, idx) => {
-                      const rowActivated =
-                        !p.isStale &&
-                        (Boolean(p.overflow) ||
-                          (p.tips60 ?? 0) > 0 ||
-                          (p.floodDepthCm ?? 0) >= DEPTH_ON_CM);
+                        <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-zinc-700">
+                          <div>Tips60: <span className="font-bold">{fmtInt(p.tips60)}</span></div>
+                          <div>Tips300: <span className="font-bold">{fmtInt(p.tips300)}</span></div>
+                          <div>Rain60: <span className="font-bold">{p.rainMm60 != null ? fmt(p.rainMm60, 2) : "—"}</span></div>
+                          <div>Rain300: <span className="font-bold">{p.rainMm300 != null ? fmt(p.rainMm300, 2) : "—"}</span></div>
+                          <div>Rate60: <span className="font-bold">{p.rainRateMmHr60 != null ? fmt(p.rainRateMmHr60, 1) : "—"}</span></div>
+                          <div>Rate300: <span className="font-bold">{p.rainRateMmHr300 != null ? fmt(p.rainRateMmHr300, 1) : "—"}</span></div>
+                          <div>FloodDepth: <span className="font-bold">{p.floodDepthCm != null ? fmt(p.floodDepthCm, 1) : "—"}</span></div>
+                          <div>RawDist: <span className="font-bold">{p.rawDistCm != null ? fmt(p.rawDistCm, 1) : "—"}</span></div>
+                          <div>US Valid: <span className="font-bold">{p.usValid == null ? "—" : p.usValid ? "true" : "false"}</span></div>
+                          <div>Accepted: <span className="font-bold">{p.acceptedForStable == null ? "—" : p.acceptedForStable ? "true" : "false"}</span></div>
+                          <div>Overflow: <span className="font-bold">{p.overflow == null ? "—" : p.overflow ? "true" : "false"}</span></div>
+                          <div>Activated: <span className="font-bold">{rowActivated ? "ON" : "OFF"}</span></div>
+                          <div>Battery: <span className="font-bold">{p.batteryPercentage != null ? `${fmtInt(p.batteryPercentage)}%` : "—"}</span></div>
+                          <div>RSSI: <span className="font-bold">{p.rssiDbm != null ? fmtInt(p.rssiDbm) : "—"}</span></div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
 
-                      return (
-                        <tr
-                          key={`${p.tsMs ?? "no-ts"}-${idx}`}
-                          className="border-b border-zinc-100 text-gray-900"
-                        >
-                          <td className="whitespace-nowrap px-3 py-3">{fmtTime(p.tsMs)}</td>
-                          <td className="px-3 py-3">{p.isStale ? "YES" : "NO"}</td>
+              <div className="mt-4 hidden md:block overflow-x-auto">
+                <table className="min-w-[1220px] w-full text-left text-xs">
+                  <thead className="bg-zinc-50 text-zinc-700">
+                    <tr>
+                      {[
+                        "Time",
+                        "Stale",
+                        "Tips60",
+                        "Rain60(mm)",
+                        "Rate60",
+                        "Tips300",
+                        "Rain300(mm)",
+                        "Rate300",
+                        "FloodDepth(cm)",
+                        "rawDist(cm)",
+                        "usValid",
+                        "accepted",
+                        "overflow",
+                        "Battery",
+                        "RSSI",
+                        "Activated",
+                      ].map((h) => (
+                        <th key={h} className="whitespace-nowrap px-3 py-3 font-semibold">
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {logsLoading && recent.length === 0 ? (
+                      <tr>
+                        <td colSpan={16} className="px-3 py-6 text-sm text-zinc-500">
+                          Loading logs…
+                        </td>
+                      </tr>
+                    ) : (
+                      recent.map((p, idx) => {
+                        const rowActivated =
+                          !p.isStale &&
+                          (Boolean(p.overflow) ||
+                            (p.tips60 ?? 0) > 0 ||
+                            (p.floodDepthCm ?? 0) >= DEPTH_ON_CM);
 
-                          <td className="px-3 py-3">{fmtInt(p.tips60)}</td>
-                          <td className="px-3 py-3">
-                            {p.rainMm60 != null ? fmt(p.rainMm60, 2) : "—"}
-                          </td>
-                          <td className="px-3 py-3">
-                            {p.rainRateMmHr60 != null ? fmt(p.rainRateMmHr60, 1) : "—"}
-                          </td>
-
-                          <td className="px-3 py-3">{fmtInt(p.tips300)}</td>
-                          <td className="px-3 py-3">
-                            {p.rainMm300 != null ? fmt(p.rainMm300, 2) : "—"}
-                          </td>
-                          <td className="px-3 py-3">
-                            {p.rainRateMmHr300 != null ? fmt(p.rainRateMmHr300, 1) : "—"}
-                          </td>
-
-                          <td className="px-3 py-3">
-                            {p.floodDepthCm != null ? fmt(p.floodDepthCm, 1) : "—"}
-                          </td>
-                          <td className="px-3 py-3">
-                            {p.rawDistCm != null ? fmt(p.rawDistCm, 1) : "—"}
-                          </td>
-
-                          <td className="px-3 py-3">
-                            {p.usValid == null ? "—" : p.usValid ? "true" : "false"}
-                          </td>
-                          <td className="px-3 py-3">
-                            {p.acceptedForStable == null
-                              ? "—"
-                              : p.acceptedForStable
-                              ? "true"
-                              : "false"}
-                          </td>
-                          <td className="px-3 py-3">
-                            {p.overflow == null ? "—" : p.overflow ? "true" : "false"}
-                          </td>
-
-                          <td className="px-3 py-3">
-                            {p.batteryPercentage != null ? `${fmtInt(p.batteryPercentage)}%` : "—"}
-                          </td>
-                          <td className="px-3 py-3">
-                            {p.rssiDbm != null ? fmtInt(p.rssiDbm) : "—"}
-                          </td>
-                          <td className="px-3 py-3">{rowActivated ? "ON" : "OFF"}</td>
-                        </tr>
-                      );
-                    })}
-                </tbody>
-              </table>
-            </div>
+                        return (
+                          <tr
+                            key={`${p.tsMs ?? "no-ts"}-${idx}`}
+                            className="border-t border-zinc-100 text-zinc-900"
+                          >
+                            <td className="whitespace-nowrap px-3 py-3">{fmtTime(p.tsMs)}</td>
+                            <td className="px-3 py-3">{p.isStale ? "YES" : "NO"}</td>
+                            <td className="px-3 py-3">{fmtInt(p.tips60)}</td>
+                            <td className="px-3 py-3">{p.rainMm60 != null ? fmt(p.rainMm60, 2) : "—"}</td>
+                            <td className="px-3 py-3">{p.rainRateMmHr60 != null ? fmt(p.rainRateMmHr60, 1) : "—"}</td>
+                            <td className="px-3 py-3">{fmtInt(p.tips300)}</td>
+                            <td className="px-3 py-3">{p.rainMm300 != null ? fmt(p.rainMm300, 2) : "—"}</td>
+                            <td className="px-3 py-3">{p.rainRateMmHr300 != null ? fmt(p.rainRateMmHr300, 1) : "—"}</td>
+                            <td className="px-3 py-3">{p.floodDepthCm != null ? fmt(p.floodDepthCm, 1) : "—"}</td>
+                            <td className="px-3 py-3">{p.rawDistCm != null ? fmt(p.rawDistCm, 1) : "—"}</td>
+                            <td className="px-3 py-3">{p.usValid == null ? "—" : p.usValid ? "true" : "false"}</td>
+                            <td className="px-3 py-3">
+                              {p.acceptedForStable == null
+                                ? "—"
+                                : p.acceptedForStable
+                                ? "true"
+                                : "false"}
+                            </td>
+                            <td className="px-3 py-3">{p.overflow == null ? "—" : p.overflow ? "true" : "false"}</td>
+                            <td className="px-3 py-3">
+                              {p.batteryPercentage != null ? `${fmtInt(p.batteryPercentage)}%` : "—"}
+                            </td>
+                            <td className="px-3 py-3">{p.rssiDbm != null ? fmtInt(p.rssiDbm) : "—"}</td>
+                            <td className="px-3 py-3">{rowActivated ? "ON" : "OFF"}</td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
-        </div>
+        </SectionCard>
       </div>
     </div>
   );
