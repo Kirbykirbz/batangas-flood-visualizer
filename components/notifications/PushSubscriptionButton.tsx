@@ -1,5 +1,3 @@
-//app/components/notifications/PushSubscriptionButton.tsx
-
 "use client";
 
 import { useEffect, useRef, useState } from "react";
@@ -31,7 +29,9 @@ function BellIcon({ active }: { active: boolean }) {
     >
       <path d="M15 17H9m6 0H5.5c1.2-1 2-2.6 2-4.3V10a4.5 4.5 0 1 1 9 0v2.7c0 1.7.8 3.3 2 4.3H15Z" />
       <path d="M10 20a2 2 0 0 0 4 0" />
-      {active ? <circle cx="18.5" cy="6" r="2.2" fill="currentColor" stroke="none" /> : null}
+      {active ? (
+        <circle cx="18.5" cy="6" r="2.2" fill="currentColor" stroke="none" />
+      ) : null}
     </svg>
   );
 }
@@ -154,7 +154,7 @@ export default function PushSubscriptionButton({
         p256dh,
         auth,
         deviceId: deviceId ?? null,
-        scope: "general",
+        scope: deviceId ? "device" : "all",
       }),
     });
 
