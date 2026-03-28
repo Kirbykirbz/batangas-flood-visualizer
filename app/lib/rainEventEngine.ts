@@ -1,5 +1,4 @@
 // app/lib/rainEventEngine.ts
-
 import type { SensorPoint } from "@/app/lib/sensorStore";
 import {
   createRainEvent,
@@ -15,12 +14,25 @@ import {
 
 const EVENT_START_RAIN_MMHR = 0.5;
 const EVENT_START_DEPTH_CM = 5;
-const EVENT_END_COOLDOWN_MIN = 15;
-const MM_PER_TIP = 0.327;
+
+// Lower end threshold to avoid flapping.
+const EVENT_END_DEPTH_CM = 2;
+
+// Resolve faster after last actual rain tip.
+const EVENT_END_RAIN_INACTIVE_MIN = 10;
+
+// Canonical calibration value.
+const MM_PER_TIP = 0.27;
 
 function getTips60(point: SensorPoint): number {
   return typeof point.tips60 === "number" && Number.isFinite(point.tips60)
     ? Math.max(0, point.tips60)
+    : 0;
+}
+
+function getTips300(point: SensorPoint): number {
+  return typeof point.tips300 === "number" && Number.isFinite(point.tips300)
+    ? Math.max(0, point.tips300)
     : 0;
 }
 
@@ -31,15 +43,17 @@ function getRainTicksTotal(point: SensorPoint): number | null {
     : null;
 }
 
-function isEventSignalActive(point: SensorPoint): boolean {
+function isStartSignalActive(point: SensorPoint): boolean {
   const rainMmHr = extractRainMmHr(point);
   const depthCm = extractFloodDepthCm(point);
   const overflow = isOverflow(point);
   const tips60 = getTips60(point);
+  const tips300 = getTips300(point);
 
   return (
     rainMmHr >= EVENT_START_RAIN_MMHR ||
     tips60 > 0 ||
+    tips300 > 0 ||
     depthCm >= EVENT_START_DEPTH_CM ||
     overflow
   );
@@ -58,28 +72,29 @@ function buildTriggerReason(point: SensorPoint): string {
   const depthCm = extractFloodDepthCm(point);
   const overflow = isOverflow(point);
   const tips60 = getTips60(point);
+  const tips300 = getTips300(point);
 
-  if (overflow) return "overflow detected";
+  if (overflow) return "overflow_detected";
 
   if (
     depthCm >= EVENT_START_DEPTH_CM &&
-    (rainMmHr >= EVENT_START_RAIN_MMHR || tips60 > 0)
+    (rainMmHr >= EVENT_START_RAIN_MMHR || tips60 > 0 || tips300 > 0)
   ) {
-    return "rainfall and flood depth threshold met";
+    return "rain_and_flood_threshold_met";
   }
 
-  if (rainMmHr >= EVENT_START_RAIN_MMHR || tips60 > 0) {
-    return "rainfall threshold met";
+  if (rainMmHr >= EVENT_START_RAIN_MMHR || tips60 > 0 || tips300 > 0) {
+    return "rainfall_threshold_met";
   }
 
   if (depthCm >= EVENT_START_DEPTH_CM) {
-    return "flood depth threshold met";
+    return "flood_depth_threshold_met";
   }
 
-  return "sensor event signal detected";
+  return "sensor_event_signal_detected";
 }
 
-function computeRainIncrementMm(args: {
+function computeDeltaTicks(args: {
   currentRainTicksTotal: number | null;
   previousRainTicksTotal: number | null;
 }): number {
@@ -94,7 +109,16 @@ function computeRainIncrementMm(args: {
     return 0;
   }
 
-  return deltaTicks * MM_PER_TIP;
+  return deltaTicks;
+}
+
+function hasTipSignal(point: SensorPoint): boolean {
+  return getTips60(point) > 0 || getTips300(point) > 0;
+}
+
+function hasRecentTip(lastTipAtIso: string | null, nowIso: string): boolean {
+  if (!lastTipAtIso) return false;
+  return minutesBetweenIso(lastTipAtIso, nowIso) < EVENT_END_RAIN_INACTIVE_MIN;
 }
 
 export async function processRainEventForReading(point: SensorPoint) {
@@ -106,70 +130,76 @@ export async function processRainEventForReading(point: SensorPoint) {
   const timestampIso = new Date(tsMs).toISOString();
   const rainMmHr = extractRainMmHr(point);
   const floodDepthCm = extractFloodDepthCm(point);
-  const active = isEventSignalActive(point);
+  const overflow = isOverflow(point);
   const currentRainTicksTotal = getRainTicksTotal(point);
+
+  const tipSignalNow = hasTipSignal(point);
+  const startSignalActive = isStartSignalActive(point);
 
   const ongoing = await getOngoingRainEvent(deviceId);
 
   if (!ongoing) {
-    if (!active) return;
+    if (!startSignalActive) return;
+
+    // Count the first visible tip signal when the event starts.
+    // If the event is triggered by a single first tip reading, we should not lose it.
+    const initialTipCount = tipSignalNow ? 1 : 0;
+    const initialRainMm = initialTipCount * MM_PER_TIP;
+    const initialLastTipAt = tipSignalNow ? timestampIso : null;
 
     await createRainEvent({
       device_id: deviceId,
       started_at: timestampIso,
       trigger_reason: buildTriggerReason(point),
-      total_rain_mm: 0,
+      total_rain_mm: initialRainMm,
       peak_rain_rate_mmh: rainMmHr,
       peak_flood_depth_cm: floodDepthCm,
       last_signal_at: timestampIso,
+      last_tip_at: initialLastTipAt,
       last_rain_ticks_total: currentRainTicksTotal,
+      total_tips: initialTipCount,
     });
 
     return;
   }
 
   const nextPeakRain = Math.max(ongoing.peak_rain_rate_mmh ?? 0, rainMmHr);
-  const nextPeakDepth = Math.max(
-    ongoing.peak_flood_depth_cm ?? 0,
-    floodDepthCm
-  );
+  const nextPeakDepth = Math.max(ongoing.peak_flood_depth_cm ?? 0, floodDepthCm);
 
-  const rainIncrementMm = computeRainIncrementMm({
+  const deltaTicks = computeDeltaTicks({
     currentRainTicksTotal,
     previousRainTicksTotal: ongoing.last_rain_ticks_total,
   });
 
-  const nextTotalRain = Math.max(
+  const tipDetectedNow = deltaTicks > 0 || tipSignalNow;
+  const nextLastTipAt = tipDetectedNow ? timestampIso : (ongoing.last_tip_at ?? null);
+
+  const nextTotalTips = Math.max(
     0,
-    (ongoing.total_rain_mm ?? 0) + rainIncrementMm
+    (ongoing.total_tips ?? 0) + deltaTicks
   );
 
-  if (active) {
+  const nextTotalRain = Math.max(
+    0,
+    (ongoing.total_rain_mm ?? 0) + deltaTicks * MM_PER_TIP
+  );
+
+  const recentTip = hasRecentTip(nextLastTipAt, timestampIso);
+  const rainRateStillActive = rainMmHr >= EVENT_START_RAIN_MMHR;
+  const floodStillActive = floodDepthCm > EVENT_END_DEPTH_CM;
+
+  const shouldStayOngoing =
+    overflow || rainRateStillActive || recentTip || floodStillActive;
+
+  if (shouldStayOngoing) {
     await updateRainEvent(ongoing.id, {
       peak_rain_rate_mmh: nextPeakRain,
       peak_flood_depth_cm: nextPeakDepth,
       total_rain_mm: nextTotalRain,
+      total_tips: nextTotalTips,
       last_signal_at: timestampIso,
+      last_tip_at: nextLastTipAt,
       last_rain_ticks_total: currentRainTicksTotal,
-      updated_at: timestampIso,
-    });
-    return;
-  }
-
-  const lastSignalAt =
-    ongoing.last_signal_at ?? ongoing.updated_at ?? ongoing.started_at;
-
-  const minutesIdle = minutesBetweenIso(lastSignalAt, timestampIso);
-
-  if (minutesIdle >= EVENT_END_COOLDOWN_MIN) {
-    await updateRainEvent(ongoing.id, {
-      peak_rain_rate_mmh: nextPeakRain,
-      peak_flood_depth_cm: nextPeakDepth,
-      total_rain_mm: nextTotalRain,
-      last_rain_ticks_total: currentRainTicksTotal,
-      status: "resolved",
-      ended_at: timestampIso,
-      ended_reason: "auto_cooldown_end",
       updated_at: timestampIso,
     });
     return;
@@ -179,7 +209,12 @@ export async function processRainEventForReading(point: SensorPoint) {
     peak_rain_rate_mmh: nextPeakRain,
     peak_flood_depth_cm: nextPeakDepth,
     total_rain_mm: nextTotalRain,
+    total_tips: nextTotalTips,
+    last_tip_at: nextLastTipAt,
     last_rain_ticks_total: currentRainTicksTotal,
+    status: "resolved",
+    ended_at: timestampIso,
+    ended_reason: "auto_inactive_rain_and_receded_flood",
     updated_at: timestampIso,
   });
 }

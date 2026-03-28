@@ -1,4 +1,9 @@
+//app/dashboard/admin/page.tsx
+
 "use client";
+
+export const dynamic = "force-dynamic";
+
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";

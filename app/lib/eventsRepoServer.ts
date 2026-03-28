@@ -1,5 +1,4 @@
 // app/lib/eventsRepoServer.ts
-
 import { supabaseAdmin } from "@/app/lib/supabaseAdmin";
 
 export type RainEventStatus = "ongoing" | "resolved" | "cancelled";
@@ -16,7 +15,9 @@ export type RainEventRecord = {
   peak_rain_rate_mmh: number;
   peak_flood_depth_cm: number;
   last_signal_at: string | null;
+  last_tip_at: string | null;
   last_rain_ticks_total: number | null;
+  total_tips: number;
   ended_by_user_id: string | null;
   created_at: string;
   updated_at: string;
@@ -96,7 +97,9 @@ export async function createRainEvent(payload: {
   peak_rain_rate_mmh?: number;
   peak_flood_depth_cm?: number;
   last_signal_at?: string | null;
+  last_tip_at?: string | null;
   last_rain_ticks_total?: number | null;
+  total_tips?: number;
 }) {
   const { data, error } = await supabaseAdmin
     .from("rain_events")
@@ -108,7 +111,9 @@ export async function createRainEvent(payload: {
       peak_rain_rate_mmh: payload.peak_rain_rate_mmh ?? 0,
       peak_flood_depth_cm: payload.peak_flood_depth_cm ?? 0,
       last_signal_at: payload.last_signal_at ?? null,
+      last_tip_at: payload.last_tip_at ?? null,
       last_rain_ticks_total: payload.last_rain_ticks_total ?? null,
+      total_tips: payload.total_tips ?? 0,
     })
     .select()
     .single();
@@ -128,7 +133,9 @@ export async function updateRainEvent(
       | "peak_rain_rate_mmh"
       | "peak_flood_depth_cm"
       | "last_signal_at"
+      | "last_tip_at"
       | "last_rain_ticks_total"
+      | "total_tips"
       | "updated_at"
       | "ended_reason"
       | "ended_by_user_id"

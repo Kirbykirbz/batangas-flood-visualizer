@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { getRainEventById } from "@/app/lib/eventsRepoServer";
 import { supabaseAdmin } from "@/app/lib/supabaseAdmin";
+import { toNumber } from "@/app/lib/sensorReading";
 
-type SensorReadingExportRow = {
+type SensorReadingRow = {
   id: number;
   device_id: string;
   ts: string;
@@ -27,79 +28,70 @@ type SensorReadingExportRow = {
   network_type: string | null;
 };
 
-function escapeCsv(value: unknown): string {
+function csvEscape(value: unknown) {
   if (value == null) return "";
-
   const str = String(value);
-
-  if (
-    str.includes('"') ||
-    str.includes(",") ||
-    str.includes("\n") ||
-    str.includes("\r")
-  ) {
+  if (/[",\n]/.test(str)) {
     return `"${str.replace(/"/g, '""')}"`;
   }
-
   return str;
 }
 
-function rowsToCsv(rows: SensorReadingExportRow[]): string {
-  const headers: Array<keyof SensorReadingExportRow> = [
-    "id",
-    "device_id",
-    "ts",
-    "raw_dist_cm",
-    "raw_water_cm",
-    "stable_water_cm",
-    "us_valid",
-    "accepted_for_stable",
-    "overflow",
-    "rain_ticks_total",
-    "tips_60",
-    "tips_300",
-    "rain_rate_mmh_60",
-    "rain_rate_mmh_300",
-    "rssi_dbm",
-    "flood_depth_cm",
-    "dry_distance_cm",
-    "created_at",
-    "vbat_v",
-    "current_ma",
-    "battery_percentage",
-    "network_type",
-  ];
+function boolText(value: boolean | null | undefined) {
+  if (value == null) return "";
+  return value ? "true" : "false";
+}
 
-  const lines: string[] = [];
-  lines.push(headers.join(","));
-
-  for (const row of rows) {
-    lines.push(headers.map((header) => escapeCsv(row[header])).join(","));
+function rowsToCsv(rows: Record<string, unknown>[]) {
+  if (rows.length === 0) {
+    return "";
   }
 
-  return lines.join("\n");
+  const headers = Object.keys(rows[0]);
+  const headerLine = headers.map(csvEscape).join(",");
+
+  const bodyLines = rows.map((row) =>
+    headers.map((header) => csvEscape(row[header])).join(",")
+  );
+
+  return [headerLine, ...bodyLines].join("\n");
+}
+
+function extractDeltaTips(
+  current: SensorReadingRow,
+  previous: SensorReadingRow | null
+): number {
+  const currTicks = toNumber(current.rain_ticks_total);
+  const prevTicks = previous ? toNumber(previous.rain_ticks_total) : null;
+
+  if (currTicks == null || prevTicks == null) return 0;
+
+  const delta = currTicks - prevTicks;
+  if (!Number.isFinite(delta) || delta <= 0) return 0;
+
+  return delta;
 }
 
 export async function GET(
   _req: Request,
   context: { params: Promise<{ id: string }> }
 ) {
-  const { id } = await context.params;
-  const eventId = Number(id);
-
-  if (!Number.isFinite(eventId)) {
-    return NextResponse.json(
-      { ok: false, error: "Invalid event id" },
-      { status: 400 }
-    );
-  }
-
   try {
+    const { id } = await context.params;
+    const eventId = Number(id);
+
+    if (!Number.isFinite(eventId)) {
+      return NextResponse.json(
+        { ok: false, error: "Invalid event id" },
+        { status: 400 }
+      );
+    }
+
     const event = await getRainEventById(eventId);
 
     if (!event) {
       return NextResponse.json(
-        { ok: false, error: "Event not found" },
+        { ok: false, error: "Rain event not found" },
         { status: 404 }
       );
     }
@@ -108,30 +100,32 @@ export async function GET(
 
     const { data, error } = await supabaseAdmin
       .from("sensor_readings")
-      .select(`
-        id,
-        device_id,
-        ts,
-        raw_dist_cm,
-        raw_water_cm,
-        stable_water_cm,
-        us_valid,
-        accepted_for_stable,
-        overflow,
-        rain_ticks_total,
-        tips_60,
-        tips_300,
-        rain_rate_mmh_60,
-        rain_rate_mmh_300,
-        rssi_dbm,
-        flood_depth_cm,
-        dry_distance_cm,
-        created_at,
-        vbat_v,
-        current_ma,
-        battery_percentage,
-        network_type
-      `)
+      .select(
+        `
+          id,
+          device_id,
+          ts,
+          raw_dist_cm,
+          raw_water_cm,
+          stable_water_cm,
+          us_valid,
+          accepted_for_stable,
+          overflow,
+          rain_ticks_total,
+          tips_60,
+          tips_300,
+          rain_rate_mmh_60,
+          rain_rate_mmh_300,
+          rssi_dbm,
+          flood_depth_cm,
+          dry_distance_cm,
+          created_at,
+          vbat_v,
+          current_ma,
+          battery_percentage,
+          network_type
+        `
+      )
       .eq("device_id", event.device_id)
       .gte("ts", event.started_at)
       .lte("ts", endIso)
@@ -139,16 +133,75 @@ export async function GET(
 
     if (error) {
       return NextResponse.json(
-        { ok: false, error: `[export event] ${error.message}` },
+        { ok: false, error: `[event export] ${error.message}` },
         { status: 500 }
       );
     }
 
-    const rows = (data ?? []) as SensorReadingExportRow[];
-    const csv = rowsToCsv(rows);
+    const rows = (data ?? []) as SensorReadingRow[];
 
-    const safeDeviceId = event.device_id.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const filename = `rain-event-${event.id}-${safeDeviceId}.csv`;
+    if (rows.length === 0) {
+      return NextResponse.json(
+        { ok: false, error: "No sensor readings found for this event window" },
+        { status: 404 }
+      );
+    }
+
+    let runningTips = 0;
+    let runningRainMm = 0;
+
+    const exportRows = rows.map((row, index) => {
+      const previous = index > 0 ? rows[index - 1] : null;
+      const deltaTips = extractDeltaTips(row, previous);
+
+      runningTips += deltaTips;
+      runningRainMm += deltaTips * 0.27;
+
+      return {
+        event_id: event.id,
+        event_status: event.status,
+        event_started_at: event.started_at,
+        event_ended_at: event.ended_at ?? "",
+        event_trigger_reason: event.trigger_reason ?? "",
+        event_ended_reason: event.ended_reason ?? "",
+
+        sensor_id: row.device_id,
+        reading_id: row.id,
+        reading_ts: row.ts,
+        reading_created_at: row.created_at,
+
+        raw_dist_cm: toNumber(row.raw_dist_cm),
+        raw_water_cm: toNumber(row.raw_water_cm),
+        stable_water_cm: toNumber(row.stable_water_cm),
+        flood_depth_cm: toNumber(row.flood_depth_cm),
+        dry_distance_cm: toNumber(row.dry_distance_cm),
+
+        us_valid: boolText(row.us_valid),
+        accepted_for_stable: boolText(row.accepted_for_stable),
+        overflow: boolText(row.overflow),
+
+        rain_ticks_total: toNumber(row.rain_ticks_total),
+        delta_tips_from_previous: deltaTips,
+        cumulative_event_tips: runningTips,
+
+        tips_60: toNumber(row.tips_60),
+        tips_300: toNumber(row.tips_300),
+
+        rain_rate_mmh_60: toNumber(row.rain_rate_mmh_60),
+        rain_rate_mmh_300: toNumber(row.rain_rate_mmh_300),
+
+        cumulative_event_rain_mm: Number(runningRainMm.toFixed(3)),
+
+        rssi_dbm: toNumber(row.rssi_dbm),
+        vbat_v: toNumber(row.vbat_v),
+        current_ma: toNumber(row.current_ma),
+        battery_percentage: toNumber(row.battery_percentage),
+        network_type: row.network_type ?? "",
+      };
+    });
+
+    const csv = rowsToCsv(exportRows);
+    const filename = `rain-event-${eventId}.csv`;
 
     return new NextResponse(csv, {
       status: 200,
@@ -159,11 +212,15 @@ export async function GET(
       },
     });
   } catch (error) {
+    console.error("[GET /api/admin/events/[id]/export] failed:", error);
+
     return NextResponse.json(
       {
         ok: false,
         error:
-          error instanceof Error ? error.message : "Failed to export event CSV",
+          error instanceof Error
+            ? error.message
+            : "Failed to export event CSV",
       },
       { status: 500 }
     );

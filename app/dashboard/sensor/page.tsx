@@ -97,7 +97,7 @@ const TAU_MIN = 60;
 const DEPTH_DAMP_BASE = 0.2;
 
 // Keep this aligned with your tipping-bucket calibration.
-const MM_PER_TIP = 0.327;
+const MM_PER_TIP = 0.27;
 
 function classifyFloodCm(depthCm: number, overflow = false): FloodStatus {
   if (overflow || depthCm >= 30) {

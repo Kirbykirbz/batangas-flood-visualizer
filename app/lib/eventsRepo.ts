@@ -1,5 +1,4 @@
 // app/lib/eventsRepo.ts
-
 import { supabase } from "@/lib/supabaseClient";
 
 export type RainEventStatus = "ongoing" | "resolved" | "cancelled";
@@ -16,7 +15,9 @@ export type RainEventRecord = {
   peak_rain_rate_mmh: number;
   peak_flood_depth_cm: number;
   last_signal_at: string | null;
+  last_tip_at: string | null;
   last_rain_ticks_total: number | null;
+  total_tips: number;
   ended_by_user_id: string | null;
   created_at: string;
   updated_at: string;
@@ -79,6 +80,13 @@ export async function createRainEvent(payload: {
   device_id: string;
   started_at: string;
   trigger_reason?: string | null;
+  total_rain_mm?: number;
+  peak_rain_rate_mmh?: number;
+  peak_flood_depth_cm?: number;
+  last_signal_at?: string | null;
+  last_tip_at?: string | null;
+  last_rain_ticks_total?: number | null;
+  total_tips?: number;
 }) {
   const { data, error } = await supabase
     .from("rain_events")
@@ -86,6 +94,13 @@ export async function createRainEvent(payload: {
       device_id: payload.device_id,
       started_at: payload.started_at,
       trigger_reason: payload.trigger_reason ?? null,
+      total_rain_mm: payload.total_rain_mm ?? 0,
+      peak_rain_rate_mmh: payload.peak_rain_rate_mmh ?? 0,
+      peak_flood_depth_cm: payload.peak_flood_depth_cm ?? 0,
+      last_signal_at: payload.last_signal_at ?? null,
+      last_tip_at: payload.last_tip_at ?? null,
+      last_rain_ticks_total: payload.last_rain_ticks_total ?? null,
+      total_tips: payload.total_tips ?? 0,
     })
     .select()
     .single();
@@ -107,7 +122,9 @@ export async function updateRainEvent(
       | "updated_at"
       | "ended_reason"
       | "last_signal_at"
+      | "last_tip_at"
       | "last_rain_ticks_total"
+      | "total_tips"
       | "ended_by_user_id"
     >
   >
@@ -120,7 +137,9 @@ export async function updateRainEvent(
   if (error) throw new Error(`[updateRainEvent] ${error.message}`);
 }
 
-export async function getRainEventById(id: number): Promise<RainEventRecord | null> {
+export async function getRainEventById(
+  id: number
+): Promise<RainEventRecord | null> {
   const { data, error } = await supabase
     .from("rain_events")
     .select("*")

@@ -1,3 +1,5 @@
+//app/api/push/send/route.ts
+
 import { NextRequest, NextResponse } from "next/server";
 import webpush from "web-push";
 import { listActivePushSubscriptions, deactivatePushSubscription } from "@/app/lib/pushRepo";

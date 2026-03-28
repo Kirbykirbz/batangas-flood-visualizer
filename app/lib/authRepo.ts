@@ -6,7 +6,33 @@ export async function signInAdmin(email: string, password: string) {
     password,
   });
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const userId = data.user?.id;
+
+  if (!userId) {
+    await supabase.auth.signOut();
+    throw new Error("No authenticated user was returned.");
+  }
+
+  const { data: roleRow, error: roleError } = await supabase
+    .from("user_roles")
+    .select("role")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (roleError) {
+    await supabase.auth.signOut();
+    throw new Error(roleError.message);
+  }
+
+  if (!roleRow || roleRow.role !== "admin") {
+    await supabase.auth.signOut();
+    throw new Error("This account is not authorized for admin access.");
+  }
+
   return data;
 }
 
@@ -21,7 +47,6 @@ export async function getCurrentUser() {
     error,
   } = await supabase.auth.getUser();
 
-  // Missing session should behave like signed out, not like an app error.
   if (error) {
     if (error.message?.toLowerCase().includes("auth session missing")) {
       return null;
@@ -48,7 +73,6 @@ export async function getCurrentUserRole() {
     error: userError,
   } = await supabase.auth.getUser();
 
-  // Signed out is a valid state.
   if (userError) {
     if (userError.message?.toLowerCase().includes("auth session missing")) {
       return null;

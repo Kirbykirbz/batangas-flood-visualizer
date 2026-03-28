@@ -1,3 +1,5 @@
+//app/components/notifications/PushSubscriptionButton.tsx
+
 "use client";
 
 import { useEffect, useRef, useState } from "react";
