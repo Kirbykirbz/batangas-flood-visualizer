@@ -1,4 +1,4 @@
-const SW_VERSION = "v1";
+const SW_VERSION = "v2";
 const STATIC_CACHE = `flood-monitor-static-${SW_VERSION}`;
 const RUNTIME_CACHE = `flood-monitor-runtime-${SW_VERSION}`;
 
@@ -174,39 +174,205 @@ async function cacheFirstStatic(request) {
 }
 
 /**
+ * ALERT HELPERS
+ */
+function normalizeLevel(level) {
+  if (
+    level === "watch" ||
+    level === "warning" ||
+    level === "danger" ||
+    level === "overflow" ||
+    level === "info"
+  ) {
+    return level;
+  }
+  return "info";
+}
+
+function vibrationPatternForLevel(level) {
+  switch (level) {
+    case "overflow":
+      return [300, 120, 300, 120, 500];
+    case "danger":
+      return [240, 100, 240, 100, 240];
+    case "warning":
+      return [180, 100, 180];
+    case "watch":
+      return [120, 80, 120];
+    default:
+      return undefined;
+  }
+}
+
+function soundKeyForLevel(level) {
+  switch (level) {
+    case "overflow":
+      return "overflow-alarm";
+    case "danger":
+      return "danger-alarm";
+    case "warning":
+    case "watch":
+      return "warning-soft";
+    default:
+      return null;
+  }
+}
+
+function buildNotificationTag(payload) {
+  if (payload.alertId != null) {
+    return `flood-alert-${payload.alertId}`;
+  }
+
+  if (payload.deviceId) {
+    return `flood-alert-device-${payload.deviceId}-${payload.level}`;
+  }
+
+  return `flood-alert-global-${payload.level}`;
+}
+
+/**
+ * Notify any open windows so the foreground app can play sound,
+ * show in-app banners, or update live UI.
+ */
+async function notifyOpenClients(payload) {
+  const clientList = await self.clients.matchAll({
+    type: "window",
+    includeUncontrolled: true,
+  });
+
+  await Promise.all(
+    clientList.map((client) =>
+      client.postMessage({
+        type: "FLOOD_ALERT_PUSH_RECEIVED",
+        payload,
+      })
+    )
+  );
+}
+
+/**
  * PUSH
- * Preserves your existing push behavior and defaults.
+ *
+ * Supports:
+ * - manual push
+ * - automated push
+ * - DB-backed dynamic alerts
+ * - foreground message fanout to open tabs/PWA windows
  */
 self.addEventListener("push", (event) => {
-  let data = {};
+  let raw = {};
 
   try {
-    data = event.data ? event.data.json() : {};
+    raw = event.data ? event.data.json() : {};
   } catch {
-    data = {
+    raw = {
       title: "Flood Alert",
       body: event.data ? event.data.text() : "New notification received.",
     };
   }
 
-  const title = data.title || "Flood Alert";
-  const options = {
-    body: data.body || "New flood monitoring update.",
-    icon: data.icon || "/flood-icon.png",
-    badge: data.badge || "/flood-icon.png",
-    data: {
-      url: data.url || "/dashboard",
-    },
-    tag: data.tag || "flood-alert",
-    renotify: true,
+  const level = normalizeLevel(raw.level);
+  const title =
+    typeof raw.title === "string" && raw.title.trim()
+      ? raw.title
+      : "Flood Alert";
+
+  const body =
+    typeof raw.body === "string" && raw.body.trim()
+      ? raw.body
+      : "New flood monitoring update.";
+
+  const url =
+    typeof raw.url === "string" && raw.url.trim()
+      ? raw.url
+      : "/dashboard";
+
+  const payload = {
+    title,
+    body,
+    url,
+    level,
+    deviceId:
+      typeof raw.deviceId === "string" && raw.deviceId.trim()
+        ? raw.deviceId
+        : null,
+    sensorName:
+      typeof raw.sensorName === "string" && raw.sensorName.trim()
+        ? raw.sensorName
+        : null,
+    zoneLabel:
+      typeof raw.zoneLabel === "string" && raw.zoneLabel.trim()
+        ? raw.zoneLabel
+        : null,
+    alertId:
+      Number.isFinite(Number(raw.alertId)) && raw.alertId != null
+        ? Number(raw.alertId)
+        : null,
+    soundKey:
+      typeof raw.soundKey === "string" && raw.soundKey.trim()
+        ? raw.soundKey
+        : soundKeyForLevel(level),
+    triggeredAt:
+      typeof raw.triggeredAt === "string" && raw.triggeredAt.trim()
+        ? raw.triggeredAt
+        : new Date().toISOString(),
+    vibrate: Array.isArray(raw.vibrate)
+      ? raw.vibrate
+      : vibrationPatternForLevel(level),
+    tag:
+      typeof raw.tag === "string" && raw.tag.trim()
+        ? raw.tag
+        : buildNotificationTag({
+            alertId:
+              Number.isFinite(Number(raw.alertId)) && raw.alertId != null
+                ? Number(raw.alertId)
+                : null,
+            deviceId:
+              typeof raw.deviceId === "string" && raw.deviceId.trim()
+                ? raw.deviceId
+                : null,
+            level,
+          }),
+    requireInteraction: level === "danger" || level === "overflow",
+    icon:
+      typeof raw.icon === "string" && raw.icon.trim()
+        ? raw.icon
+        : "/flood-icon.png",
+    badge:
+      typeof raw.badge === "string" && raw.badge.trim()
+        ? raw.badge
+        : "/flood-icon.png",
   };
 
-  event.waitUntil(self.registration.showNotification(title, options));
+  const options = {
+    body: payload.body,
+    icon: payload.icon,
+    badge: payload.badge,
+    data: {
+      url: payload.url,
+      level: payload.level,
+      deviceId: payload.deviceId,
+      alertId: payload.alertId,
+      soundKey: payload.soundKey,
+      triggeredAt: payload.triggeredAt,
+    },
+    tag: payload.tag,
+    renotify: true,
+    requireInteraction: payload.requireInteraction,
+    vibrate: payload.vibrate,
+  };
+
+  event.waitUntil(
+    Promise.all([
+      self.registration.showNotification(payload.title, options),
+      notifyOpenClients(payload),
+    ])
+  );
 });
 
 /**
  * NOTIFICATION CLICK
- * Preserves your dashboard redirect behavior.
+ * Opens or focuses the dashboard/PWA window.
  */
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
@@ -218,19 +384,23 @@ self.addEventListener("notificationclick", (event) => {
       : "/dashboard";
 
   event.waitUntil(
-    clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
-      for (const client of clientList) {
-        if ("focus" in client) {
-          if ("navigate" in client) {
-            client.navigate(targetUrl);
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((clientList) => {
+        for (const client of clientList) {
+          if ("focus" in client) {
+            if ("navigate" in client) {
+              client.navigate(targetUrl);
+            }
+            return client.focus();
           }
-          return client.focus();
         }
-      }
 
-      if (clients.openWindow) {
-        return clients.openWindow(targetUrl);
-      }
-    })
+        if (self.clients.openWindow) {
+          return self.clients.openWindow(targetUrl);
+        }
+
+        return Promise.resolve();
+      })
   );
 });

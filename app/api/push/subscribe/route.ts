@@ -1,5 +1,5 @@
-//app/api/push/subscribe/route.ts
 
+// app/api/push/subscribe/route.ts
 import { NextResponse } from "next/server";
 import { upsertPushSubscriptionServer } from "@/app/lib/pushRepoServer";
 
@@ -9,8 +9,8 @@ export async function POST(req: Request) {
       endpoint?: string;
       p256dh?: string;
       auth?: string;
-      deviceId?: string | null;
       scope?: string | null;
+      targetDeviceIds?: string[] | null;
       userId?: string | null;
     };
 
@@ -25,13 +25,17 @@ export async function POST(req: Request) {
       );
     }
 
+    const scope = body.scope === "device" ? "device" : "all";
+
     const id = await upsertPushSubscriptionServer({
       user_id: body.userId ?? null,
-      device_id: body.deviceId ?? null,
       endpoint,
       p256dh,
       auth,
-      scope: body.scope ?? null,
+      scope,
+      targetDeviceIds: Array.isArray(body.targetDeviceIds)
+        ? body.targetDeviceIds
+        : [],
     });
 
     return NextResponse.json({ ok: true, id });

@@ -1,3 +1,4 @@
+// app/lib/pushRepoServer.ts
 import { supabaseAdmin } from "@/app/lib/supabaseAdmin";
 
 export type PushSubscriptionRecord = {
@@ -7,7 +8,7 @@ export type PushSubscriptionRecord = {
   endpoint: string;
   p256dh: string;
   auth: string;
-  scope: string | null;
+  scope: "all" | "device" | null;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -15,68 +16,75 @@ export type PushSubscriptionRecord = {
 
 export async function upsertPushSubscriptionServer(payload: {
   user_id?: string | null;
-  device_id?: string | null;
   endpoint: string;
   p256dh: string;
   auth: string;
-  scope?: string | null;
+  scope: "all" | "device";
+  targetDeviceIds?: string[];
 }) {
-  const { data: existing, error: existingError } = await supabaseAdmin
-    .from("push_subscriptions")
-    .select("id")
-    .eq("endpoint", payload.endpoint)
-    .maybeSingle();
-
-  if (existingError) {
-    throw new Error(
-      `[upsertPushSubscriptionServer:lookup] ${existingError.message}`
-    );
-  }
-
-  if (existing?.id) {
-    const { error } = await supabaseAdmin
-      .from("push_subscriptions")
-      .update({
-        user_id: payload.user_id ?? null,
-        device_id: payload.device_id ?? null,
-        p256dh: payload.p256dh,
-        auth: payload.auth,
-        scope: payload.scope ?? null,
-        is_active: true,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", existing.id);
-
-    if (error) {
-      throw new Error(
-        `[upsertPushSubscriptionServer:update] ${error.message}`
-      );
-    }
-
-    return existing.id;
-  }
+  const normalizedTargetIds =
+    payload.scope === "device"
+      ? Array.from(
+          new Set(
+            (payload.targetDeviceIds ?? [])
+              .map((x) => String(x).trim())
+              .filter(Boolean)
+          )
+        )
+      : [];
 
   const { data, error } = await supabaseAdmin
     .from("push_subscriptions")
-    .insert({
-      user_id: payload.user_id ?? null,
-      device_id: payload.device_id ?? null,
-      endpoint: payload.endpoint,
-      p256dh: payload.p256dh,
-      auth: payload.auth,
-      scope: payload.scope ?? null,
-      is_active: true,
-    })
-    .select("id")
+    .upsert(
+      {
+        user_id: payload.user_id ?? null,
+        endpoint: payload.endpoint,
+        p256dh: payload.p256dh,
+        auth: payload.auth,
+        scope: payload.scope,
+        is_active: true,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "endpoint" }
+    )
+    .select("*")
     .single();
 
   if (error) {
+    throw new Error(`[upsertPushSubscriptionServer] ${error.message}`);
+  }
+
+  const subscriptionId = Number(data.id);
+
+  const { error: deleteTargetsError } = await supabaseAdmin
+    .from("push_subscription_targets")
+    .delete()
+    .eq("subscription_id", subscriptionId);
+
+  if (deleteTargetsError) {
     throw new Error(
-      `[upsertPushSubscriptionServer:insert] ${error.message}`
+      `[upsertPushSubscriptionServer:deleteTargets] ${deleteTargetsError.message}`
     );
   }
 
-  return data.id as number;
+  if (payload.scope === "device" && normalizedTargetIds.length > 0) {
+    const { error: insertTargetsError } = await supabaseAdmin
+      .from("push_subscription_targets")
+      .insert(
+        normalizedTargetIds.map((deviceId) => ({
+          subscription_id: subscriptionId,
+          device_id: deviceId,
+        }))
+      );
+
+    if (insertTargetsError) {
+      throw new Error(
+        `[upsertPushSubscriptionServer:insertTargets] ${insertTargetsError.message}`
+      );
+    }
+  }
+
+  return subscriptionId;
 }
 
 export async function deactivatePushSubscriptionServer(endpoint: string) {
@@ -89,8 +97,83 @@ export async function deactivatePushSubscriptionServer(endpoint: string) {
     .eq("endpoint", endpoint);
 
   if (error) {
+    throw new Error(`[deactivatePushSubscriptionServer] ${error.message}`);
+  }
+}
+
+export async function getPushSubscriptionStatusServer(endpoint: string) {
+  const { data, error } = await supabaseAdmin
+    .from("push_subscriptions")
+    .select("id, is_active, scope")
+    .eq("endpoint", endpoint)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`[getPushSubscriptionStatusServer] ${error.message}`);
+  }
+
+  if (!data) return null;
+
+  const subscriptionId = Number(data.id);
+
+  const { data: targets, error: targetsError } = await supabaseAdmin
+    .from("push_subscription_targets")
+    .select("device_id")
+    .eq("subscription_id", subscriptionId)
+    .order("device_id", { ascending: true });
+
+  if (targetsError) {
     throw new Error(
-      `[deactivatePushSubscriptionServer] ${error.message}`
+      `[getPushSubscriptionStatusServer:targets] ${targetsError.message}`
     );
   }
+
+  return {
+    isActive: Boolean(data.is_active),
+    scope: data.scope === "device" ? "device" : "all",
+    targetDeviceIds: (targets ?? []).map((row) => String(row.device_id)),
+  };
+}
+
+export async function listActivePushSubscriptionsServer(deviceId?: string | null) {
+  const { data, error } = await supabaseAdmin
+    .from("push_subscriptions")
+    .select("*")
+    .eq("is_active", true)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    throw new Error(`[listActivePushSubscriptionsServer] ${error.message}`);
+  }
+
+  const subscriptions = (data ?? []) as PushSubscriptionRecord[];
+
+  if (!deviceId) {
+    return subscriptions;
+  }
+
+  const ids = subscriptions.map((row) => Number(row.id));
+  if (ids.length === 0) return [];
+
+  const { data: targets, error: targetsError } = await supabaseAdmin
+    .from("push_subscription_targets")
+    .select("subscription_id, device_id")
+    .in("subscription_id", ids);
+
+  if (targetsError) {
+    throw new Error(
+      `[listActivePushSubscriptionsServer:targets] ${targetsError.message}`
+    );
+  }
+
+  const subscriptionIdsMatchingDevice = new Set<number>(
+    (targets ?? [])
+      .filter((row) => String(row.device_id) === deviceId)
+      .map((row) => Number(row.subscription_id))
+  );
+
+  return subscriptions.filter((sub) => {
+    if (sub.scope === "all") return true;
+    return subscriptionIdsMatchingDevice.has(Number(sub.id));
+  });
 }

@@ -126,16 +126,15 @@ export default function Navbar() {
     router.refresh();
   }
 
+
+
   const isAdmin = role === "admin";
 
   return (
     <>
       <nav className="sticky top-0 z-[1100] border-b border-zinc-200 bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-3 py-3 sm:px-4">
-          <Link
-            href="/dashboard"
-            className="flex min-w-0 items-center gap-3"
-          >
+          <Link href="/dashboard" className="flex min-w-0 items-center gap-3">
             <Image
               src="/flood-icon.png"
               alt="Batangas City Flood Visualizer"
@@ -161,14 +160,14 @@ export default function Navbar() {
             <PushSubscriptionButton />
 
             <div ref={menuRef} className="relative">
-              <button
-                type="button"
-                onClick={() => setMenuOpen((v) => !v)}
-                className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-700 shadow-sm transition hover:bg-zinc-50"
-                aria-label="Open user menu"
-              >
-                <UserIcon />
-              </button>
+<button
+  type="button"
+  onClick={() => setMenuOpen((v) => !v)}
+  className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-700 shadow-sm transition hover:bg-zinc-50"
+  aria-label="Open user menu"
+>
+  <UserIcon />
+</button>
 
               {menuOpen ? (
                 <div className="absolute right-0 top-14 z-[3200] w-[min(92vw,18rem)] overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl sm:w-72">
@@ -219,6 +218,7 @@ export default function Navbar() {
                       Sensor Dashboard
                     </Link>
 
+                    
                     <button
                       type="button"
                       onClick={() => {
@@ -249,6 +249,14 @@ export default function Navbar() {
                           className="block px-4 py-2 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50"
                         >
                           Admin Rain Events
+                        </Link>
+
+                        <Link
+                          href="/dashboard/admin/alerts"
+                          onClick={() => setMenuOpen(false)}
+                          className="block px-4 py-2 text-sm font-semibold text-zinc-800 transition hover:bg-zinc-50"
+                        >
+                          Admin Alerts
                         </Link>
 
                         <Link

@@ -465,15 +465,15 @@ export default function FixedFloodMapInner({
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="inline-block h-3 w-8 rounded bg-green-500" />
-                    <span>Stage 1</span>
+                    <span>Low Flood</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="inline-block h-3 w-8 rounded bg-orange-500" />
-                    <span>Stage 2</span>
+                    <span>Medium Flood</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="inline-block h-3 w-8 rounded bg-red-600" />
-                    <span>Stage 3</span>
+                    <span>High Flood</span>
                   </div>
                 </div>
               </div>
@@ -497,15 +497,15 @@ export default function FixedFloodMapInner({
               </div>
               <div className="flex items-center gap-2">
                 <span className="inline-block h-3 w-8 rounded bg-green-500" />
-                <span>Stage 1</span>
+                <span>Low Flood</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="inline-block h-3 w-8 rounded bg-orange-500" />
-                <span>Stage 2</span>
+                <span>Medium Flood</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="inline-block h-3 w-8 rounded bg-red-600" />
-                <span>Stage 3</span>
+                <span>High Flood</span>
               </div>
             </div>
           </div>

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { FeatureCollection, Feature, Point } from "geojson";
 import FixedFloodMap, { type SensorDevice } from "@/components/FixedFloodMap";
+import DashboardTutorialModal from "@/components/tutorial/DashboardTutorialModal";
 import type { SensorPoint } from "@/app/lib/sensorStore";
 import {
   extractFloodDepthCm,
@@ -22,6 +23,8 @@ type Payload = {
 };
 
 type WarningLevel = "NORMAL" | "WATCH" | "WARNING" | "DANGER";
+
+const STORAGE_KEY_TUTORIAL_SEEN = "flood_dashboard_tutorial_seen_v1";
 
 function fmt(n: number | null, digits = 1) {
   if (n == null || !Number.isFinite(n)) return "—";
@@ -107,6 +110,7 @@ export default function DashboardPage() {
   const [forecastHorizon, setForecastHorizon] = useState<ForecastHorizon>("now");
   const [userPosition, setUserPosition] = useState<{ lat: number; lng: number } | null>(null);
   const [lastPollMs, setLastPollMs] = useState<number>(0);
+  const [tutorialOpen, setTutorialOpen] = useState(false);
 
   const devices: SensorDevice[] = useMemo(() => {
     return sensorRecords
@@ -143,6 +147,21 @@ export default function DashboardPage() {
 
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const rafId = window.requestAnimationFrame(() => {
+      const seen = window.localStorage.getItem(STORAGE_KEY_TUTORIAL_SEEN);
+      if (!seen) {
+        setTutorialOpen(true);
+      }
+    });
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
     };
   }, []);
 
@@ -289,35 +308,40 @@ export default function DashboardPage() {
     <div className="min-h-screen bg-zinc-50">
       <div className="mx-auto max-w-6xl px-3 py-4 sm:px-4 sm:py-6">
         <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-              Flood Pathway Visualizer
-            </div>
-            <h1 className="mt-1 text-xl font-extrabold tracking-tight text-zinc-900 sm:text-2xl">
-              Batangas City Flood Overview
-            </h1>
-            <div className="mt-1 text-sm text-zinc-600">
-              See current rain, flood depth, warning level, and scenario projections at a selected sensor location.
-            </div>
-          </div>
+  <div>
+    <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+      Flood Pathway Visualizer
+    </div>
+    <h1 className="mt-1 text-xl font-extrabold tracking-tight text-zinc-900 sm:text-2xl">
+      Batangas City Flood Overview
+    </h1>
+    <div className="mt-1 text-sm text-zinc-600">
+      See current rain, flood depth, warning level, and scenario projections at a selected sensor location.
+    </div>
+  </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <Link
-              href="/dashboard/sensor"
-              className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold shadow-sm hover:bg-zinc-50"
-            >
-              Open Sensor Dashboard
-            </Link>
-            <Link
-              href="/dashboard/admin/sensors"
-              className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold shadow-sm hover:bg-zinc-50"
-            >
-              Admin Sensors
-            </Link>
-          </div>
-        </div>
+  <div className="flex flex-wrap items-center gap-2">
+    <button
+      type="button"
+      onClick={() => setTutorialOpen(true)}
+      className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
+    >
+      Tutorial
+    </button>
 
-        <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+    <Link
+      href="/dashboard/sensor"
+      className="inline-flex items-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
+    >
+      Open Sensor Dashboard
+    </Link>
+  </div>
+</div>
+
+        <div
+          data-tour="sensor-selector"
+          className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm"
+        >
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_auto]">
             <div>
               <div className="text-xs font-semibold text-zinc-500">Selected Sensor</div>
@@ -351,7 +375,7 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div>
+            <div data-tour="scenario-horizon">
               <div className="text-xs font-semibold text-zinc-500">Scenario Horizon</div>
               <div className="mt-2 flex flex-wrap gap-2">
                 {(["now", "2h", "4h", "6h", "8h"] as ForecastHorizon[]).map((h) => {
@@ -376,7 +400,10 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div
+          data-tour="summary-cards"
+          className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4"
+        >
           <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
             <div className="text-xs font-semibold text-zinc-500">
               {forecastHorizon === "now" ? "Rain Now" : `Projected Rain (${forecastHorizon})`}
@@ -441,7 +468,10 @@ export default function DashboardPage() {
           <div className="mt-2 text-sm text-zinc-700">{scenario.advisory}</div>
         </div>
 
-        <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-2 shadow-sm sm:p-3">
+        <div
+          data-tour="map"
+          className="mt-4 rounded-2xl border border-zinc-200 bg-white p-2 shadow-sm sm:p-3"
+        >
           {sensorsLoading ? (
             <div className="flex h-[80vh] w-full items-center justify-center rounded-lg bg-zinc-100 text-sm text-zinc-500">
               Loading sensors and map…
@@ -462,16 +492,13 @@ export default function DashboardPage() {
           )}
         </div>
 
-        <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-5 text-sm text-zinc-700 shadow-sm">
-          <div className="font-extrabold text-zinc-900">What you can do next</div>
-          <ul className="mt-2 list-disc space-y-1 pl-5">
-            <li>Use the sensor selector to switch monitored locations loaded from the database.</li>
-            <li>Use the scenario toggle to preview 2h, 4h, 6h, and 8h outcomes if current conditions persist.</li>
-            <li>Open the Sensor Dashboard for more detailed technical readings and logs.</li>
-            <li>Open Admin Sensors to manage sensor coordinates and status.</li>
-          </ul>
-        </div>
+       
       </div>
+
+      <DashboardTutorialModal
+        open={tutorialOpen}
+        onClose={() => setTutorialOpen(false)}
+      />
     </div>
   );
 }
