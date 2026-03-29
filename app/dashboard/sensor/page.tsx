@@ -19,6 +19,7 @@ import {
 } from "@/app/lib/sensorReading";
 import { listSensors, type SensorRecord } from "@/app/lib/sensorsRepo";
 import type { SensorPoint } from "@/app/lib/sensorStore";
+import PagasaForecastCard from "@/components/weather/PagasaForecastCard";
 
 type Payload = {
   latest: SensorPoint | null;
@@ -228,12 +229,6 @@ function rainBadgeClasses(label: RainStatus["label"]) {
     default:
       return "bg-zinc-700 text-white";
   }
-}
-
-function riskToneClasses(risk: number) {
-  if (risk <= 0.3) return "text-emerald-700";
-  if (risk <= 0.6) return "text-amber-700";
-  return "text-red-700";
 }
 
 function SectionCard({
@@ -1053,6 +1048,16 @@ export default function SensorDashboardPage() {
           </SectionCard>
         </div>
 
+        <div className="mt-4">
+          <PagasaForecastCard
+            selectedSensorName={selectedSensor.name}
+            zoneLabel={selectedSensor.zoneLabel}
+            currentRainMmHr={rainMmHrCurrent}
+            currentFloodDepthCm={floodDepthCmCurrent}
+            overflow={latestOverflow}
+          />
+        </div>
+
         <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.3fr_1fr]">
           <SectionCard
             title="Weather"
@@ -1175,219 +1180,223 @@ export default function SensorDashboardPage() {
           </SectionCard>
         </div>
 
-        <SectionCard
-          title="Report Summary"
-          subtitle={`Summary for ${selectedSensor.name} under ${forecastHorizon === "now" ? "live conditions" : `forecast ${forecastHorizon}`}.`}
-        >
-          <div className="grid gap-2 text-sm text-zinc-800">
-            <div>• {reportSummary.freshness}</div>
-            <div>• {reportSummary.rain}</div>
-            <div>• {reportSummary.depth}</div>
-            <div>• {reportSummary.activation}</div>
-            <div>• {reportSummary.waterStatus}</div>
-            <div>• {reportSummary.risk}</div>
-          </div>
-        </SectionCard>
+        <div className="mt-4">
+          <SectionCard
+            title="Report Summary"
+            subtitle={`Summary for ${selectedSensor.name} under ${forecastHorizon === "now" ? "live conditions" : `forecast ${forecastHorizon}`}.`}
+          >
+            <div className="grid gap-2 text-sm text-zinc-800">
+              <div>• {reportSummary.freshness}</div>
+              <div>• {reportSummary.rain}</div>
+              <div>• {reportSummary.depth}</div>
+              <div>• {reportSummary.activation}</div>
+              <div>• {reportSummary.waterStatus}</div>
+              <div>• {reportSummary.risk}</div>
+            </div>
+          </SectionCard>
+        </div>
 
-        <SectionCard
-          title="Raw Records"
-          subtitle="Choose a sensor and row count for database-backed raw logs."
-          action={
-            <button
-              type="button"
-              onClick={() => setShowLogs((v) => !v)}
-              className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-800 hover:bg-zinc-50"
-            >
-              {showLogs ? "Hide Logs" : "Show Logs"}
-            </button>
-          }
-        >
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-            <label className="grid gap-1 text-sm font-semibold text-zinc-700">
-              <span>Logs Sensor</span>
-              <select
-                value={logsDeviceId}
-                onChange={(e) => setLogsDeviceId(e.target.value)}
-                className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-900 shadow-sm"
-              >
-                {sensors.map((sensor) => (
-                  <option key={sensor.id} value={sensor.id}>
-                    {sensor.name} — {sensor.zoneLabel}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="grid gap-1 text-sm font-semibold text-zinc-700">
-              <span>Rows</span>
-              <select
-                value={logsLimit}
-                onChange={(e) => setLogsLimit(Number(e.target.value))}
-                className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-900 shadow-sm"
-              >
-                {LOG_LIMIT_OPTIONS.map((n) => (
-                  <option key={n} value={n}>
-                    {n} rows
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <div className="grid gap-1 text-sm font-semibold text-zinc-700">
-              <span>Quick Sync</span>
+        <div className="mt-4">
+          <SectionCard
+            title="Raw Records"
+            subtitle="Choose a sensor and row count for database-backed raw logs."
+            action={
               <button
                 type="button"
-                onClick={() => setLogsDeviceId(selectedDeviceId)}
-                className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
+                onClick={() => setShowLogs((v) => !v)}
+                className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-800 hover:bg-zinc-50"
               >
-                Use Main Sensor
+                {showLogs ? "Hide Logs" : "Show Logs"}
               </button>
-            </div>
-          </div>
+            }
+          >
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <label className="grid gap-1 text-sm font-semibold text-zinc-700">
+                <span>Logs Sensor</span>
+                <select
+                  value={logsDeviceId}
+                  onChange={(e) => setLogsDeviceId(e.target.value)}
+                  className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-900 shadow-sm"
+                >
+                  {sensors.map((sensor) => (
+                    <option key={sensor.id} value={sensor.id}>
+                      {sensor.name} — {sensor.zoneLabel}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
-          {!showLogs ? (
-            <div className="mt-4 text-sm text-zinc-600">
-              Logs are hidden by default for performance. Open them only when needed.
-            </div>
-          ) : recent.length === 0 && !logsLoading ? (
-            <div className="mt-4 text-sm text-zinc-600">
-              No logs found for {selectedLogsSensor?.name ?? "this sensor"}.
-            </div>
-          ) : (
-            <>
-              <div className="mt-4 md:hidden space-y-3">
-                {logsLoading && recent.length === 0 ? (
-                  <div className="text-sm text-zinc-600">Loading logs…</div>
-                ) : (
-                  recent.map((p, idx) => {
-                    const rowActivated =
-                      !p.isStale &&
-                      (Boolean(p.overflow) ||
-                        (p.tips60 ?? 0) > 0 ||
-                        (p.floodDepthCm ?? 0) >= DEPTH_ON_CM);
+              <label className="grid gap-1 text-sm font-semibold text-zinc-700">
+                <span>Rows</span>
+                <select
+                  value={logsLimit}
+                  onChange={(e) => setLogsLimit(Number(e.target.value))}
+                  className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-900 shadow-sm"
+                >
+                  {LOG_LIMIT_OPTIONS.map((n) => (
+                    <option key={n} value={n}>
+                      {n} rows
+                    </option>
+                  ))}
+                </select>
+              </label>
 
-                    return (
-                      <div
-                        key={`${p.tsMs ?? "no-ts"}-${idx}`}
-                        className="rounded-xl border border-zinc-200 bg-zinc-50 p-3"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="text-sm font-bold text-zinc-900">
-                            {fmtTime(p.tsMs)}
+              <div className="grid gap-1 text-sm font-semibold text-zinc-700">
+                <span>Quick Sync</span>
+                <button
+                  type="button"
+                  onClick={() => setLogsDeviceId(selectedDeviceId)}
+                  className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
+                >
+                  Use Main Sensor
+                </button>
+              </div>
+            </div>
+
+            {!showLogs ? (
+              <div className="mt-4 text-sm text-zinc-600">
+                Logs are hidden by default for performance. Open them only when needed.
+              </div>
+            ) : recent.length === 0 && !logsLoading ? (
+              <div className="mt-4 text-sm text-zinc-600">
+                No logs found for {selectedLogsSensor?.name ?? "this sensor"}.
+              </div>
+            ) : (
+              <>
+                <div className="mt-4 space-y-3 md:hidden">
+                  {logsLoading && recent.length === 0 ? (
+                    <div className="text-sm text-zinc-600">Loading logs…</div>
+                  ) : (
+                    recent.map((p, idx) => {
+                      const rowActivated =
+                        !p.isStale &&
+                        (Boolean(p.overflow) ||
+                          (p.tips60 ?? 0) > 0 ||
+                          (p.floodDepthCm ?? 0) >= DEPTH_ON_CM);
+
+                      return (
+                        <div
+                          key={`${p.tsMs ?? "no-ts"}-${idx}`}
+                          className="rounded-xl border border-zinc-200 bg-zinc-50 p-3"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="text-sm font-bold text-zinc-900">
+                              {fmtTime(p.tsMs)}
+                            </div>
+                            <span
+                              className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${badgeToneClasses(
+                                p.isStale ? "warn" : "ok"
+                              )}`}
+                            >
+                              {p.isStale ? "STALE" : "LIVE"}
+                            </span>
                           </div>
-                          <span
-                            className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${badgeToneClasses(
-                              p.isStale ? "warn" : "ok"
-                            )}`}
-                          >
-                            {p.isStale ? "STALE" : "LIVE"}
-                          </span>
-                        </div>
 
-                        <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-zinc-700">
-                          <div>Tips60: <span className="font-bold">{fmtInt(p.tips60)}</span></div>
-                          <div>Tips300: <span className="font-bold">{fmtInt(p.tips300)}</span></div>
-                          <div>Rain60: <span className="font-bold">{p.rainMm60 != null ? fmt(p.rainMm60, 2) : "—"}</span></div>
-                          <div>Rain300: <span className="font-bold">{p.rainMm300 != null ? fmt(p.rainMm300, 2) : "—"}</span></div>
-                          <div>Rate60: <span className="font-bold">{p.rainRateMmHr60 != null ? fmt(p.rainRateMmHr60, 1) : "—"}</span></div>
-                          <div>Rate300: <span className="font-bold">{p.rainRateMmHr300 != null ? fmt(p.rainRateMmHr300, 1) : "—"}</span></div>
-                          <div>FloodDepth: <span className="font-bold">{p.floodDepthCm != null ? fmt(p.floodDepthCm, 1) : "—"}</span></div>
-                          <div>RawDist: <span className="font-bold">{p.rawDistCm != null ? fmt(p.rawDistCm, 1) : "—"}</span></div>
-                          <div>US Valid: <span className="font-bold">{p.usValid == null ? "—" : p.usValid ? "true" : "false"}</span></div>
-                          <div>Accepted: <span className="font-bold">{p.acceptedForStable == null ? "—" : p.acceptedForStable ? "true" : "false"}</span></div>
-                          <div>Overflow: <span className="font-bold">{p.overflow == null ? "—" : p.overflow ? "true" : "false"}</span></div>
-                          <div>Activated: <span className="font-bold">{rowActivated ? "ON" : "OFF"}</span></div>
-                          <div>Battery: <span className="font-bold">{p.batteryPercentage != null ? `${fmtInt(p.batteryPercentage)}%` : "—"}</span></div>
-                          <div>RSSI: <span className="font-bold">{p.rssiDbm != null ? fmtInt(p.rssiDbm) : "—"}</span></div>
+                          <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-zinc-700">
+                            <div>Tips60: <span className="font-bold">{fmtInt(p.tips60)}</span></div>
+                            <div>Tips300: <span className="font-bold">{fmtInt(p.tips300)}</span></div>
+                            <div>Rain60: <span className="font-bold">{p.rainMm60 != null ? fmt(p.rainMm60, 2) : "—"}</span></div>
+                            <div>Rain300: <span className="font-bold">{p.rainMm300 != null ? fmt(p.rainMm300, 2) : "—"}</span></div>
+                            <div>Rate60: <span className="font-bold">{p.rainRateMmHr60 != null ? fmt(p.rainRateMmHr60, 1) : "—"}</span></div>
+                            <div>Rate300: <span className="font-bold">{p.rainRateMmHr300 != null ? fmt(p.rainRateMmHr300, 1) : "—"}</span></div>
+                            <div>FloodDepth: <span className="font-bold">{p.floodDepthCm != null ? fmt(p.floodDepthCm, 1) : "—"}</span></div>
+                            <div>RawDist: <span className="font-bold">{p.rawDistCm != null ? fmt(p.rawDistCm, 1) : "—"}</span></div>
+                            <div>US Valid: <span className="font-bold">{p.usValid == null ? "—" : p.usValid ? "true" : "false"}</span></div>
+                            <div>Accepted: <span className="font-bold">{p.acceptedForStable == null ? "—" : p.acceptedForStable ? "true" : "false"}</span></div>
+                            <div>Overflow: <span className="font-bold">{p.overflow == null ? "—" : p.overflow ? "true" : "false"}</span></div>
+                            <div>Activated: <span className="font-bold">{rowActivated ? "ON" : "OFF"}</span></div>
+                            <div>Battery: <span className="font-bold">{p.batteryPercentage != null ? `${fmtInt(p.batteryPercentage)}%` : "—"}</span></div>
+                            <div>RSSI: <span className="font-bold">{p.rssiDbm != null ? fmtInt(p.rssiDbm) : "—"}</span></div>
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
+                      );
+                    })
+                  )}
+                </div>
 
-              <div className="mt-4 hidden md:block overflow-x-auto">
-                <table className="min-w-[1220px] w-full text-left text-xs">
-                  <thead className="bg-zinc-50 text-zinc-700">
-                    <tr>
-                      {[
-                        "Time",
-                        "Stale",
-                        "Tips60",
-                        "Rain60(mm)",
-                        "Rate60",
-                        "Tips300",
-                        "Rain300(mm)",
-                        "Rate300",
-                        "FloodDepth(cm)",
-                        "rawDist(cm)",
-                        "usValid",
-                        "accepted",
-                        "overflow",
-                        "Battery",
-                        "RSSI",
-                        "Activated",
-                      ].map((h) => (
-                        <th key={h} className="whitespace-nowrap px-3 py-3 font-semibold">
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {logsLoading && recent.length === 0 ? (
+                <div className="mt-4 hidden overflow-x-auto md:block">
+                  <table className="min-w-[1220px] w-full text-left text-xs">
+                    <thead className="bg-zinc-50 text-zinc-700">
                       <tr>
-                        <td colSpan={16} className="px-3 py-6 text-sm text-zinc-500">
-                          Loading logs…
-                        </td>
+                        {[
+                          "Time",
+                          "Stale",
+                          "Tips60",
+                          "Rain60(mm)",
+                          "Rate60",
+                          "Tips300",
+                          "Rain300(mm)",
+                          "Rate300",
+                          "FloodDepth(cm)",
+                          "rawDist(cm)",
+                          "usValid",
+                          "accepted",
+                          "overflow",
+                          "Battery",
+                          "RSSI",
+                          "Activated",
+                        ].map((h) => (
+                          <th key={h} className="whitespace-nowrap px-3 py-3 font-semibold">
+                            {h}
+                          </th>
+                        ))}
                       </tr>
-                    ) : (
-                      recent.map((p, idx) => {
-                        const rowActivated =
-                          !p.isStale &&
-                          (Boolean(p.overflow) ||
-                            (p.tips60 ?? 0) > 0 ||
-                            (p.floodDepthCm ?? 0) >= DEPTH_ON_CM);
+                    </thead>
+                    <tbody>
+                      {logsLoading && recent.length === 0 ? (
+                        <tr>
+                          <td colSpan={16} className="px-3 py-6 text-sm text-zinc-500">
+                            Loading logs…
+                          </td>
+                        </tr>
+                      ) : (
+                        recent.map((p, idx) => {
+                          const rowActivated =
+                            !p.isStale &&
+                            (Boolean(p.overflow) ||
+                              (p.tips60 ?? 0) > 0 ||
+                              (p.floodDepthCm ?? 0) >= DEPTH_ON_CM);
 
-                        return (
-                          <tr
-                            key={`${p.tsMs ?? "no-ts"}-${idx}`}
-                            className="border-t border-zinc-100 text-zinc-900"
-                          >
-                            <td className="whitespace-nowrap px-3 py-3">{fmtTime(p.tsMs)}</td>
-                            <td className="px-3 py-3">{p.isStale ? "YES" : "NO"}</td>
-                            <td className="px-3 py-3">{fmtInt(p.tips60)}</td>
-                            <td className="px-3 py-3">{p.rainMm60 != null ? fmt(p.rainMm60, 2) : "—"}</td>
-                            <td className="px-3 py-3">{p.rainRateMmHr60 != null ? fmt(p.rainRateMmHr60, 1) : "—"}</td>
-                            <td className="px-3 py-3">{fmtInt(p.tips300)}</td>
-                            <td className="px-3 py-3">{p.rainMm300 != null ? fmt(p.rainMm300, 2) : "—"}</td>
-                            <td className="px-3 py-3">{p.rainRateMmHr300 != null ? fmt(p.rainRateMmHr300, 1) : "—"}</td>
-                            <td className="px-3 py-3">{p.floodDepthCm != null ? fmt(p.floodDepthCm, 1) : "—"}</td>
-                            <td className="px-3 py-3">{p.rawDistCm != null ? fmt(p.rawDistCm, 1) : "—"}</td>
-                            <td className="px-3 py-3">{p.usValid == null ? "—" : p.usValid ? "true" : "false"}</td>
-                            <td className="px-3 py-3">
-                              {p.acceptedForStable == null
-                                ? "—"
-                                : p.acceptedForStable
-                                ? "true"
-                                : "false"}
-                            </td>
-                            <td className="px-3 py-3">{p.overflow == null ? "—" : p.overflow ? "true" : "false"}</td>
-                            <td className="px-3 py-3">
-                              {p.batteryPercentage != null ? `${fmtInt(p.batteryPercentage)}%` : "—"}
-                            </td>
-                            <td className="px-3 py-3">{p.rssiDbm != null ? fmtInt(p.rssiDbm) : "—"}</td>
-                            <td className="px-3 py-3">{rowActivated ? "ON" : "OFF"}</td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-        </SectionCard>
+                          return (
+                            <tr
+                              key={`${p.tsMs ?? "no-ts"}-${idx}`}
+                              className="border-t border-zinc-100 text-zinc-900"
+                            >
+                              <td className="whitespace-nowrap px-3 py-3">{fmtTime(p.tsMs)}</td>
+                              <td className="px-3 py-3">{p.isStale ? "YES" : "NO"}</td>
+                              <td className="px-3 py-3">{fmtInt(p.tips60)}</td>
+                              <td className="px-3 py-3">{p.rainMm60 != null ? fmt(p.rainMm60, 2) : "—"}</td>
+                              <td className="px-3 py-3">{p.rainRateMmHr60 != null ? fmt(p.rainRateMmHr60, 1) : "—"}</td>
+                              <td className="px-3 py-3">{fmtInt(p.tips300)}</td>
+                              <td className="px-3 py-3">{p.rainMm300 != null ? fmt(p.rainMm300, 2) : "—"}</td>
+                              <td className="px-3 py-3">{p.rainRateMmHr300 != null ? fmt(p.rainRateMmHr300, 1) : "—"}</td>
+                              <td className="px-3 py-3">{p.floodDepthCm != null ? fmt(p.floodDepthCm, 1) : "—"}</td>
+                              <td className="px-3 py-3">{p.rawDistCm != null ? fmt(p.rawDistCm, 1) : "—"}</td>
+                              <td className="px-3 py-3">{p.usValid == null ? "—" : p.usValid ? "true" : "false"}</td>
+                              <td className="px-3 py-3">
+                                {p.acceptedForStable == null
+                                  ? "—"
+                                  : p.acceptedForStable
+                                  ? "true"
+                                  : "false"}
+                              </td>
+                              <td className="px-3 py-3">{p.overflow == null ? "—" : p.overflow ? "true" : "false"}</td>
+                              <td className="px-3 py-3">
+                                {p.batteryPercentage != null ? `${fmtInt(p.batteryPercentage)}%` : "—"}
+                              </td>
+                              <td className="px-3 py-3">{p.rssiDbm != null ? fmtInt(p.rssiDbm) : "—"}</td>
+                              <td className="px-3 py-3">{rowActivated ? "ON" : "OFF"}</td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </SectionCard>
+        </div>
       </div>
     </div>
   );
