@@ -11,6 +11,10 @@ export function toNumber(v: unknown): number | null {
   return null;
 }
 
+function clamp(min: number, value: number, max: number): number {
+  return Math.max(min, Math.min(value, max));
+}
+
 export function extractTimestampMs(
   point: SensorPoint | null | undefined
 ): number | null {
@@ -69,7 +73,18 @@ export function extractBatteryPercentage(
   point: SensorPoint | null | undefined
 ): number | null {
   if (!point) return null;
-  return toNumber(point.batteryPercentage);
+
+  const n = toNumber(point.batteryPercentage);
+  if (n == null) return null;
+
+  return clamp(0, Math.round(n), 100);
+}
+
+export function extractBatteryVoltage(
+  point: SensorPoint | null | undefined
+): number | null {
+  if (!point) return null;
+  return toNumber(point.vbatV);
 }
 
 export function extractRssiDbm(

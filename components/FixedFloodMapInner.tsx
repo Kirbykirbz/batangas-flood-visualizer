@@ -30,6 +30,10 @@ import {
   getStageLabel,
   type ForecastHorizon,
 } from "@/app/lib/floodForecast";
+import {
+  HARD_CODED_LANDMARKS,
+  type LandmarkCategory,
+} from "@/app/lib/mapLandMarks";
 
 type SensorDevice = {
   id: string;
@@ -120,6 +124,18 @@ function StagePanes() {
       const pane = map.getPane("stage-current");
       if (pane) pane.style.zIndex = "301";
     }
+
+    if (!map.getPane("landmarks")) {
+      map.createPane("landmarks");
+      const pane = map.getPane("landmarks");
+      if (pane) pane.style.zIndex = "410";
+    }
+
+    if (!map.getPane("sensors")) {
+      map.createPane("sensors");
+      const pane = map.getPane("sensors");
+      if (pane) pane.style.zIndex = "420";
+    }
   }, [map]);
 
   return null;
@@ -166,6 +182,50 @@ const sensorIcon = L.divIcon({
   iconSize: [18, 18],
   iconAnchor: [9, 9],
 });
+
+function getLandmarkColor(category: LandmarkCategory) {
+  switch (category) {
+    case "mall":
+      return "#d97706";
+    case "school":
+      return "#7c3aed";
+    case "government":
+      return "#0f766e";
+    case "subdivision":
+      return "#475569";
+    case "stadium":
+      return "#b91c1c";
+    case "market":
+      return "#0891b2";
+    case "district":
+      return "#6b7280";
+    case "monument":
+      return "#be185d";
+    default:
+      return "#d97706";
+  }
+}
+
+function makeLandmarkIcon(category: LandmarkCategory) {
+  const color = getLandmarkColor(category);
+
+  return L.divIcon({
+    className: "",
+    html: `
+      <div style="
+        width:20px;
+        height:20px;
+        background:${color};
+        border:3px solid #ffffff;
+        transform:rotate(45deg);
+        border-radius:4px;
+        box-shadow:0 0 0 2px rgba(0,0,0,0.12);
+      "></div>
+    `,
+    iconSize: [20, 20],
+    iconAnchor: [10, 10],
+  });
+}
 
 export default function FixedFloodMapInner({
   geoJsonData,
@@ -257,7 +317,7 @@ export default function FixedFloodMapInner({
       }
     }
 
-    loadLatest();
+    void loadLatest();
     const id = window.setInterval(loadLatest, 2000);
 
     return () => {
@@ -334,7 +394,7 @@ export default function FixedFloodMapInner({
     let rafId: number | null = null;
 
     setPreviousStage(displayStageRef.current);
-    setPreviousStageOpacity(displayStageRef.current === 0 ? 0 : 0.85);
+    setPreviousStageOpacity(displayStageRef.current === 0 ? 0 : 0.78);
     setDisplayStage(riskStage);
 
     rafId = window.requestAnimationFrame(() => {
@@ -343,7 +403,7 @@ export default function FixedFloodMapInner({
       fadeIntervalId = window.setInterval(() => {
         const elapsed = performance.now() - start;
         const progress = Math.min(elapsed / fadeDurationMs, 1);
-        const nextOpacity = 0.85 * (1 - progress);
+        const nextOpacity = 0.78 * (1 - progress);
         setPreviousStageOpacity(nextOpacity);
 
         if (progress >= 1 && fadeIntervalId != null) {
@@ -373,6 +433,8 @@ export default function FixedFloodMapInner({
     if (previousStage === 0) return null;
     return `/tiles/risk-stage-${previousStage}/{z}/{x}/{y}.png`;
   }, [previousStage]);
+
+  const landmarks = HARD_CODED_LANDMARKS;
 
   return (
     <div className="relative">
@@ -464,6 +526,10 @@ export default function FixedFloodMapInner({
                     <span>Other sensors</span>
                   </div>
                   <div className="flex items-center gap-2">
+                    <span className="inline-block h-3 w-3 rotate-45 bg-amber-500" />
+                    <span>Landmark</span>
+                  </div>
+                  <div className="flex items-center gap-2">
                     <span className="inline-block h-3 w-8 rounded bg-green-500" />
                     <span>Low Flood</span>
                   </div>
@@ -494,6 +560,10 @@ export default function FixedFloodMapInner({
               <div className="flex items-center gap-2">
                 <span className="inline-block h-3 w-3 rounded-full bg-blue-600" />
                 <span>Other sensors</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-3 w-3 rotate-45 bg-amber-500" />
+                <span>Landmark</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="inline-block h-3 w-8 rounded bg-green-500" />
@@ -622,6 +692,7 @@ export default function FixedFloodMapInner({
             attribution="&copy; OpenStreetMap contributors &copy; CARTO"
             maxNativeZoom={20}
             maxZoom={21}
+            opacity={1}
           />
         ) : (
           <TileLayer
@@ -629,6 +700,7 @@ export default function FixedFloodMapInner({
             attribution="Tiles &copy; Esri"
             maxNativeZoom={19}
             maxZoom={21}
+            opacity={1}
           />
         )}
 
@@ -648,7 +720,7 @@ export default function FixedFloodMapInner({
           <TileLayer
             key={`current-stage-${displayStage}-${forecastHorizon}`}
             url={currentStageTileUrl}
-            opacity={0.85}
+            opacity={0.72}
             pane="stage-current"
             minNativeZoom={12}
             maxNativeZoom={18}
@@ -681,6 +753,37 @@ export default function FixedFloodMapInner({
           </CircleMarker>
         )}
 
+        {landmarks.map((landmark) => (
+          <Marker
+            key={landmark.id}
+            position={[landmark.lat, landmark.lng]}
+            icon={makeLandmarkIcon(landmark.category)}
+            pane="landmarks"
+          >
+            <Tooltip direction="top" offset={[0, -8]}>
+              <span className="font-semibold">{landmark.name}</span>
+            </Tooltip>
+
+            <Popup>
+              <div style={{ minWidth: 220 }}>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>{landmark.name}</div>
+                <div>
+                  <b>Category</b>: {landmark.category}
+                </div>
+                <div>
+                  <b>Latitude</b>: {landmark.lat.toFixed(6)}
+                </div>
+                <div>
+                  <b>Longitude</b>: {landmark.lng.toFixed(6)}
+                </div>
+                {landmark.description ? (
+                  <div style={{ marginTop: 8, color: "#3f3f46" }}>{landmark.description}</div>
+                ) : null}
+              </div>
+            </Popup>
+          </Marker>
+        ))}
+
         {devices.map((device) => {
           const isSelected = device.id === selectedDeviceId;
           const deviceLatest = latestByDevice[device.id] ?? null;
@@ -710,6 +813,7 @@ export default function FixedFloodMapInner({
               key={device.id}
               position={[device.lat, device.lng]}
               icon={isSelected ? selectedSensorIcon : sensorIcon}
+              pane="sensors"
               eventHandlers={{
                 click: () => {
                   setMapLockTarget("selectedSensor");

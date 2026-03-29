@@ -21,6 +21,30 @@ function fmtTime(ts: string | null) {
   return d.toLocaleString();
 }
 
+function fmtShortTime(ts: string | null) {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "—";
+
+  return d.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function fmtAxisTime(ts: string | null) {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "—";
+
+  return d.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function toDateTimeLocalInputValue(value?: Date | string | null) {
   const d = value ? new Date(value) : new Date();
   if (Number.isNaN(d.getTime())) return "";
@@ -169,7 +193,8 @@ function buildChartPointsFromCsv(csv: string): ChartPoint[] {
         floodDepth,
       };
     })
-    .filter((point) => point.ts);
+    .filter((point) => point.ts)
+    .sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
 }
 
 function StatCard({
@@ -222,24 +247,56 @@ function FilterChip({
   );
 }
 
+function ChartSummaryPill({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+        {label}
+      </div>
+      <div className="mt-1 text-sm font-bold text-zinc-900">{value}</div>
+    </div>
+  );
+}
+
 function AxisChart({
   title,
   subtitle,
-  values,
-  width = 900,
-  height = 260,
+  points,
+  valueKey,
+  unitLabel,
+  width = 980,
+  height = 320,
 }: {
   title: string;
   subtitle: string;
-  values: Array<number | null>;
+  points: ChartPoint[];
+  valueKey: "rainRate" | "floodDepth";
+  unitLabel: string;
   width?: number;
   height?: number;
 }) {
-  const validValues = values.filter(
-    (v): v is number => v != null && Number.isFinite(v)
-  );
+  const values = points.map((p) => p[valueKey]);
 
-  if (validValues.length === 0) {
+  const validEntries = points
+    .map((point, index) => ({
+      index,
+      ts: point.ts,
+      value: point[valueKey],
+    }))
+    .filter(
+      (entry): entry is { index: number; ts: string; value: number } =>
+        entry.value != null && Number.isFinite(entry.value)
+    );
+
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+
+  if (validEntries.length === 0) {
     return (
       <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
         <div className="text-sm font-extrabold text-zinc-900">{title}</div>
@@ -249,12 +306,14 @@ function AxisChart({
     );
   }
 
-  const maxValue = Math.max(...validValues, 1);
+  const rawMax = Math.max(...validEntries.map((entry) => entry.value), 1);
+  const paddedMax = rawMax === 0 ? 1 : rawMax * 1.1;
   const minValue = 0;
-  const leftPad = 56;
-  const rightPad = 16;
-  const topPad = 16;
-  const bottomPad = 34;
+
+  const leftPad = 64;
+  const rightPad = 22;
+  const topPad = 20;
+  const bottomPad = 54;
 
   const innerWidth = width - leftPad - rightPad;
   const innerHeight = height - topPad - bottomPad;
@@ -263,34 +322,76 @@ function AxisChart({
     values.length <= 1 ? leftPad : leftPad + (index / (values.length - 1)) * innerWidth;
 
   const scaleY = (value: number) =>
-    topPad + innerHeight - ((value - minValue) / Math.max(maxValue - minValue, 1)) * innerHeight;
+    topPad +
+    innerHeight -
+    ((value - minValue) / Math.max(paddedMax - minValue, 1)) * innerHeight;
 
   const ticksY = 4;
   const yGuides = Array.from({ length: ticksY + 1 }, (_, i) => {
     const ratio = i / ticksY;
-    const value = maxValue - ratio * (maxValue - minValue);
+    const value = paddedMax - ratio * (paddedMax - minValue);
     const y = topPad + ratio * innerHeight;
     return { value, y };
   });
 
+  const xLabelIndices = (() => {
+    const count = Math.min(6, points.length);
+    if (count <= 1) return [0];
+
+    const result: number[] = [];
+    for (let i = 0; i < count; i += 1) {
+      const idx = Math.round((i / (count - 1)) * (points.length - 1));
+      if (!result.includes(idx)) result.push(idx);
+    }
+    return result;
+  })();
+
   let path = "";
-  values.forEach((value, index) => {
-    if (value == null || !Number.isFinite(value)) return;
-    const x = scaleX(index);
-    const y = scaleY(value);
+  validEntries.forEach((entry) => {
+    const x = scaleX(entry.index);
+    const y = scaleY(entry.value);
     path += `${path ? " L " : "M "}${x.toFixed(2)} ${y.toFixed(2)}`;
   });
 
+  const hoveredPoint =
+    hoveredIndex != null &&
+    hoveredIndex >= 0 &&
+    hoveredIndex < points.length &&
+    points[hoveredIndex]
+      ? points[hoveredIndex]
+      : null;
+
+  const hoveredValue =
+    hoveredPoint && hoveredPoint[valueKey] != null && Number.isFinite(hoveredPoint[valueKey] as number)
+      ? (hoveredPoint[valueKey] as number)
+      : null;
+
+  const minObserved = Math.min(...validEntries.map((entry) => entry.value));
+  const maxObserved = Math.max(...validEntries.map((entry) => entry.value));
+  const latestObserved = validEntries[validEntries.length - 1]?.value ?? null;
+
   return (
     <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-      <div className="text-sm font-extrabold text-zinc-900">{title}</div>
-      <div className="mt-1 text-xs text-zinc-500">{subtitle}</div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="text-sm font-extrabold text-zinc-900">{title}</div>
+          <div className="mt-1 text-xs text-zinc-500">{subtitle}</div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <ChartSummaryPill label="Points" value={String(validEntries.length)} />
+          <ChartSummaryPill label="Min" value={`${fmt(minObserved, 2)} ${unitLabel}`} />
+          <ChartSummaryPill label="Max" value={`${fmt(maxObserved, 2)} ${unitLabel}`} />
+          <ChartSummaryPill label="Latest" value={`${fmt(latestObserved, 2)} ${unitLabel}`} />
+        </div>
+      </div>
 
       <div className="mt-4 overflow-x-auto">
         <svg
           viewBox={`0 0 ${width} ${height}`}
-          className="h-72 min-w-[760px] w-full"
+          className="h-80 min-w-[820px] w-full"
           preserveAspectRatio="none"
+          onMouseLeave={() => setHoveredIndex(null)}
         >
           {yGuides.map((guide, index) => (
             <g key={index}>
@@ -303,7 +404,7 @@ function AxisChart({
                 strokeDasharray="4 4"
               />
               <text
-                x={leftPad - 8}
+                x={leftPad - 10}
                 y={guide.y + 4}
                 textAnchor="end"
                 fontSize="11"
@@ -329,6 +430,30 @@ function AxisChart({
             stroke="#a1a1aa"
           />
 
+          {xLabelIndices.map((index) => {
+            const x = scaleX(index);
+            return (
+              <g key={`x-${index}`}>
+                <line
+                  x1={x}
+                  y1={topPad + innerHeight}
+                  x2={x}
+                  y2={topPad + innerHeight + 6}
+                  stroke="#a1a1aa"
+                />
+                <text
+                  x={x}
+                  y={height - 18}
+                  textAnchor="middle"
+                  fontSize="11"
+                  fill="#71717a"
+                >
+                  {fmtAxisTime(points[index]?.ts ?? null)}
+                </text>
+              </g>
+            );
+          })}
+
           <path
             d={path}
             fill="none"
@@ -338,15 +463,93 @@ function AxisChart({
             strokeLinecap="round"
           />
 
-          {values.map((value, index) => {
-            if (value == null || !Number.isFinite(value)) return null;
-            const x = scaleX(index);
-            const y = scaleY(value);
-            return <circle key={index} cx={x} cy={y} r="3.5" fill="#18181b" />;
+          {validEntries.map((entry) => {
+            const x = scaleX(entry.index);
+            const y = scaleY(entry.value);
+            const isHovered = hoveredIndex === entry.index;
+
+            return (
+              <g key={entry.index}>
+                <circle
+                  cx={x}
+                  cy={y}
+                  r={isHovered ? 6 : 4}
+                  fill="#18181b"
+                  stroke="#ffffff"
+                  strokeWidth="2"
+                />
+                <circle
+                  cx={x}
+                  cy={y}
+                  r={14}
+                  fill="transparent"
+                  onMouseEnter={() => setHoveredIndex(entry.index)}
+                  onMouseMove={() => setHoveredIndex(entry.index)}
+                />
+              </g>
+            );
           })}
 
-          <text x={leftPad} y={height - 8} fontSize="11" fill="#71717a">
-            Time progression →
+          {hoveredPoint && hoveredValue != null ? (
+            (() => {
+              const hoverX = scaleX(hoveredIndex as number);
+              const hoverY = scaleY(hoveredValue);
+
+              const tooltipWidth = 190;
+              const tooltipHeight = 54;
+              const desiredX = hoverX + 12;
+              const maxTooltipX = width - rightPad - tooltipWidth;
+              const minTooltipX = leftPad + 8;
+              const tooltipX = Math.max(minTooltipX, Math.min(desiredX, maxTooltipX));
+
+              const desiredY = hoverY - tooltipHeight - 10;
+              const minTooltipY = topPad + 4;
+              const maxTooltipY = topPad + innerHeight - tooltipHeight - 4;
+              const tooltipY = Math.max(minTooltipY, Math.min(desiredY, maxTooltipY));
+
+              return (
+                <g pointerEvents="none">
+                  <line
+                    x1={hoverX}
+                    y1={topPad}
+                    x2={hoverX}
+                    y2={topPad + innerHeight}
+                    stroke="#52525b"
+                    strokeDasharray="4 4"
+                  />
+                  <rect
+                    x={tooltipX}
+                    y={tooltipY}
+                    width={tooltipWidth}
+                    height={tooltipHeight}
+                    rx={10}
+                    fill="#111827"
+                    opacity="0.96"
+                  />
+                  <text
+                    x={tooltipX + 12}
+                    y={tooltipY + 20}
+                    fontSize="11"
+                    fill="#e4e4e7"
+                  >
+                    {fmtShortTime(hoveredPoint.ts)}
+                  </text>
+                  <text
+                    x={tooltipX + 12}
+                    y={tooltipY + 39}
+                    fontSize="13"
+                    fontWeight="700"
+                    fill="#ffffff"
+                  >
+                    {`${fmt(hoveredValue, 2)} ${unitLabel}`}
+                  </text>
+                </g>
+              );
+            })()
+          ) : null}
+
+          <text x={leftPad} y={height - 4} fontSize="11" fill="#71717a">
+            Timeline
           </text>
         </svg>
       </div>
@@ -432,9 +635,6 @@ function ChartModal({
   }, [open, event]);
 
   if (!open || !event) return null;
-
-  const rainValues = points.map((p) => p.rainRate);
-  const floodValues = points.map((p) => p.floodDepth);
 
   const rainMax = points.reduce((acc, p) => Math.max(acc, p.rainRate ?? 0), 0);
   const floodMax = points.reduce((acc, p) => Math.max(acc, p.floodDepth ?? 0), 0);
@@ -583,14 +783,18 @@ function ChartModal({
                 <div className="mt-6 space-y-6">
                   <AxisChart
                     title="Rain Intensity"
-                    subtitle={`Y-axis: mm/hr intensity • Peak observed: ${fmt(rainMax, 2)} mm/hr`}
-                    values={rainValues}
+                    subtitle={`Time-aware chart of rain intensity • Peak observed: ${fmt(rainMax, 2)} mm/hr`}
+                    points={points}
+                    valueKey="rainRate"
+                    unitLabel="mm/hr"
                   />
 
                   <AxisChart
                     title="Flood Depth"
-                    subtitle={`Y-axis: cm depth • Peak observed: ${fmt(floodMax, 1)} cm`}
-                    values={floodValues}
+                    subtitle={`Time-aware chart of flood depth • Peak observed: ${fmt(floodMax, 1)} cm`}
+                    points={points}
+                    valueKey="floodDepth"
+                    unitLabel="cm"
                   />
                 </div>
               )}

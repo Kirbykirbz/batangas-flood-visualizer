@@ -18,6 +18,7 @@ import {
   extractTimestampMs,
   isOverflow,
 } from "@/app/lib/sensorReading";
+import RestartDeviceButton from "@/components/admin/RestartDeviceButton";
 
 type Payload = {
   latest: SensorPoint | null;
@@ -222,27 +223,31 @@ export default function AdminDashboardPage() {
     };
   }, []);
 
+  async function loadTelemetryData(signal?: AbortSignal) {
+    const res = await fetch(`/api/data?limit=300&t=${Date.now()}`, {
+      cache: "no-store",
+      signal,
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Telemetry API ${res.status}: ${text}`);
+    }
+
+    const json: Payload = await res.json();
+
+    setLatestByDevice(json.latestByDevice ?? {});
+    setServerTime(json.serverTime ?? 0);
+  }
+
   useEffect(() => {
+    const controller = new AbortController();
     let cancelled = false;
 
     async function loadTelemetry() {
       try {
         setLoadingTelemetry(true);
-        const res = await fetch(`/api/data?limit=300&t=${Date.now()}`, {
-          cache: "no-store",
-        });
-
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(`Telemetry API ${res.status}: ${text}`);
-        }
-
-        const json: Payload = await res.json();
-
-        if (!cancelled) {
-          setLatestByDevice(json.latestByDevice ?? {});
-          setServerTime(json.serverTime ?? 0);
-        }
+        await loadTelemetryData(controller.signal);
       } catch (err) {
         if (!cancelled) {
           setError((prev) =>
@@ -255,13 +260,24 @@ export default function AdminDashboardPage() {
     }
 
     void loadTelemetry();
-    const id = window.setInterval(loadTelemetry, 5000);
+    const id = window.setInterval(() => {
+      void loadTelemetry();
+    }, 5000);
 
     return () => {
       cancelled = true;
+      controller.abort();
       window.clearInterval(id);
     };
   }, []);
+
+  async function refreshTelemetryNow() {
+    try {
+      await loadTelemetryData();
+    } catch {
+      // keep existing state if refresh fails
+    }
+  }
 
   const sensorHealth = useMemo<SensorHealthRow[]>(() => {
     const STALE_MS = 15_000;
@@ -331,14 +347,7 @@ export default function AdminDashboardPage() {
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            <Link href="/dashboard/admin/sensors" className={actionButtonClasses()}>
-              Manage Sensors
-            </Link>
-            <Link href="/dashboard/admin/alerts" className={actionButtonClasses("primary")}>
-              Open Alerts
-            </Link>
-          </div>
+          
         </div>
 
         {error ? (
@@ -380,16 +389,9 @@ export default function AdminDashboardPage() {
           <Panel
             title="Sensor Health Overview"
             subtitle="Latest telemetry-backed operational status for each registered sensor."
-            action={
-              <Link
-                href="/dashboard/admin/sensors"
-                className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-800 hover:bg-zinc-50"
-              >
-                Open Sensors
-              </Link>
-            }
+           
           >
-            <div className="hidden md:block overflow-x-auto">
+            <div className="hidden overflow-x-auto md:block">
               <table className="min-w-full text-left text-sm">
                 <thead className="bg-zinc-50 text-zinc-700">
                   <tr>
@@ -401,12 +403,13 @@ export default function AdminDashboardPage() {
                     <th className="px-4 py-3 font-semibold">Overflow</th>
                     <th className="px-4 py-3 font-semibold">Battery</th>
                     <th className="px-4 py-3 font-semibold">RSSI</th>
+                    <th className="px-4 py-3 font-semibold">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {sensorHealth.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="px-4 py-6 text-sm text-zinc-500">
+                      <td colSpan={9} className="px-4 py-6 text-sm text-zinc-500">
                         No sensors found.
                       </td>
                     </tr>
@@ -478,6 +481,15 @@ export default function AdminDashboardPage() {
 
                           <td className="px-4 py-3 align-top text-zinc-700">
                             {sensor.rssiDbm != null ? `${fmtInt(sensor.rssiDbm)} dBm` : "—"}
+                          </td>
+
+                          <td className="px-4 py-3 align-top">
+                            <RestartDeviceButton
+                              deviceId={sensor.id}
+                              disabled={!sensor.isActive}
+                              compact
+                              onQueued={refreshTelemetryNow}
+                            />
                           </td>
                         </tr>
                       );
@@ -587,6 +599,14 @@ export default function AdminDashboardPage() {
                             {sensor.rssiDbm != null ? `${fmtInt(sensor.rssiDbm)} dBm` : "—"}
                           </div>
                         </div>
+                      </div>
+
+                      <div className="mt-4 border-t border-zinc-100 pt-3">
+                        <RestartDeviceButton
+                          deviceId={sensor.id}
+                          disabled={!sensor.isActive}
+                          onQueued={refreshTelemetryNow}
+                        />
                       </div>
                     </div>
                   );
