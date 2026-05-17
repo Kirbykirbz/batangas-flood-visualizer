@@ -1,3 +1,5 @@
+//app/dashboard/admin/events/page.tsx
+
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -247,13 +249,7 @@ function FilterChip({
   );
 }
 
-function ChartSummaryPill({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
+function ChartSummaryPill({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">
       <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
@@ -291,7 +287,7 @@ function AxisChart({
     }))
     .filter(
       (entry): entry is { index: number; ts: string; value: number } =>
-        entry.value != null && Number.isFinite(entry.value)
+        entry.value != null && Number.isFinite(entry.value),
     );
 
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
@@ -319,7 +315,9 @@ function AxisChart({
   const innerHeight = height - topPad - bottomPad;
 
   const scaleX = (index: number) =>
-    values.length <= 1 ? leftPad : leftPad + (index / (values.length - 1)) * innerWidth;
+    values.length <= 1
+      ? leftPad
+      : leftPad + (index / (values.length - 1)) * innerWidth;
 
   const scaleY = (value: number) =>
     topPad +
@@ -362,7 +360,9 @@ function AxisChart({
       : null;
 
   const hoveredValue =
-    hoveredPoint && hoveredPoint[valueKey] != null && Number.isFinite(hoveredPoint[valueKey] as number)
+    hoveredPoint &&
+    hoveredPoint[valueKey] != null &&
+    Number.isFinite(hoveredPoint[valueKey] as number)
       ? (hoveredPoint[valueKey] as number)
       : null;
 
@@ -379,10 +379,22 @@ function AxisChart({
         </div>
 
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <ChartSummaryPill label="Points" value={String(validEntries.length)} />
-          <ChartSummaryPill label="Min" value={`${fmt(minObserved, 2)} ${unitLabel}`} />
-          <ChartSummaryPill label="Max" value={`${fmt(maxObserved, 2)} ${unitLabel}`} />
-          <ChartSummaryPill label="Latest" value={`${fmt(latestObserved, 2)} ${unitLabel}`} />
+          <ChartSummaryPill
+            label="Points"
+            value={String(validEntries.length)}
+          />
+          <ChartSummaryPill
+            label="Min"
+            value={`${fmt(minObserved, 2)} ${unitLabel}`}
+          />
+          <ChartSummaryPill
+            label="Max"
+            value={`${fmt(maxObserved, 2)} ${unitLabel}`}
+          />
+          <ChartSummaryPill
+            label="Latest"
+            value={`${fmt(latestObserved, 2)} ${unitLabel}`}
+          />
         </div>
       </div>
 
@@ -490,63 +502,69 @@ function AxisChart({
             );
           })}
 
-          {hoveredPoint && hoveredValue != null ? (
-            (() => {
-              const hoverX = scaleX(hoveredIndex as number);
-              const hoverY = scaleY(hoveredValue);
+          {hoveredPoint && hoveredValue != null
+            ? (() => {
+                const hoverX = scaleX(hoveredIndex as number);
+                const hoverY = scaleY(hoveredValue);
 
-              const tooltipWidth = 190;
-              const tooltipHeight = 54;
-              const desiredX = hoverX + 12;
-              const maxTooltipX = width - rightPad - tooltipWidth;
-              const minTooltipX = leftPad + 8;
-              const tooltipX = Math.max(minTooltipX, Math.min(desiredX, maxTooltipX));
+                const tooltipWidth = 190;
+                const tooltipHeight = 54;
+                const desiredX = hoverX + 12;
+                const maxTooltipX = width - rightPad - tooltipWidth;
+                const minTooltipX = leftPad + 8;
+                const tooltipX = Math.max(
+                  minTooltipX,
+                  Math.min(desiredX, maxTooltipX),
+                );
 
-              const desiredY = hoverY - tooltipHeight - 10;
-              const minTooltipY = topPad + 4;
-              const maxTooltipY = topPad + innerHeight - tooltipHeight - 4;
-              const tooltipY = Math.max(minTooltipY, Math.min(desiredY, maxTooltipY));
+                const desiredY = hoverY - tooltipHeight - 10;
+                const minTooltipY = topPad + 4;
+                const maxTooltipY = topPad + innerHeight - tooltipHeight - 4;
+                const tooltipY = Math.max(
+                  minTooltipY,
+                  Math.min(desiredY, maxTooltipY),
+                );
 
-              return (
-                <g pointerEvents="none">
-                  <line
-                    x1={hoverX}
-                    y1={topPad}
-                    x2={hoverX}
-                    y2={topPad + innerHeight}
-                    stroke="#52525b"
-                    strokeDasharray="4 4"
-                  />
-                  <rect
-                    x={tooltipX}
-                    y={tooltipY}
-                    width={tooltipWidth}
-                    height={tooltipHeight}
-                    rx={10}
-                    fill="#111827"
-                    opacity="0.96"
-                  />
-                  <text
-                    x={tooltipX + 12}
-                    y={tooltipY + 20}
-                    fontSize="11"
-                    fill="#e4e4e7"
-                  >
-                    {fmtShortTime(hoveredPoint.ts)}
-                  </text>
-                  <text
-                    x={tooltipX + 12}
-                    y={tooltipY + 39}
-                    fontSize="13"
-                    fontWeight="700"
-                    fill="#ffffff"
-                  >
-                    {`${fmt(hoveredValue, 2)} ${unitLabel}`}
-                  </text>
-                </g>
-              );
-            })()
-          ) : null}
+                return (
+                  <g pointerEvents="none">
+                    <line
+                      x1={hoverX}
+                      y1={topPad}
+                      x2={hoverX}
+                      y2={topPad + innerHeight}
+                      stroke="#52525b"
+                      strokeDasharray="4 4"
+                    />
+                    <rect
+                      x={tooltipX}
+                      y={tooltipY}
+                      width={tooltipWidth}
+                      height={tooltipHeight}
+                      rx={10}
+                      fill="#111827"
+                      opacity="0.96"
+                    />
+                    <text
+                      x={tooltipX + 12}
+                      y={tooltipY + 20}
+                      fontSize="11"
+                      fill="#e4e4e7"
+                    >
+                      {fmtShortTime(hoveredPoint.ts)}
+                    </text>
+                    <text
+                      x={tooltipX + 12}
+                      y={tooltipY + 39}
+                      fontSize="13"
+                      fontWeight="700"
+                      fill="#ffffff"
+                    >
+                      {`${fmt(hoveredValue, 2)} ${unitLabel}`}
+                    </text>
+                  </g>
+                );
+              })()
+            : null}
 
           <text x={leftPad} y={height - 4} fontSize="11" fill="#71717a">
             Timeline
@@ -602,7 +620,7 @@ function ChartModal({
         if (!res.ok) {
           const text = await res.text();
           throw new Error(
-            `Failed to load event CSV (${res.status}): ${text.slice(0, 160)}`
+            `Failed to load event CSV (${res.status}): ${text.slice(0, 160)}`,
           );
         }
 
@@ -617,7 +635,7 @@ function ChartModal({
           setError(
             err instanceof Error
               ? err.message
-              : "Failed to load event chart data."
+              : "Failed to load event chart data.",
           );
         }
       } finally {
@@ -637,7 +655,10 @@ function ChartModal({
   if (!open || !event) return null;
 
   const rainMax = points.reduce((acc, p) => Math.max(acc, p.rainRate ?? 0), 0);
-  const floodMax = points.reduce((acc, p) => Math.max(acc, p.floodDepth ?? 0), 0);
+  const floodMax = points.reduce(
+    (acc, p) => Math.max(acc, p.floodDepth ?? 0),
+    0,
+  );
 
   return (
     <div className="fixed inset-0 z-[9999]">
@@ -657,7 +678,7 @@ function ChartModal({
                   </div>
                   <span
                     className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${statusClasses(
-                      event.status
+                      event.status,
                     )}`}
                   >
                     {event.status.toUpperCase()}
@@ -689,7 +710,10 @@ function ChartModal({
             <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5">
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
                 <StatCard title="Total Tips" value={fmtInt(event.total_tips)} />
-                <StatCard title="Total Rain" value={`${fmt(event.total_rain_mm, 2)} mm`} />
+                <StatCard
+                  title="Total Rain"
+                  value={`${fmt(event.total_rain_mm, 2)} mm`}
+                />
                 <StatCard
                   title="Peak Rain Intensity"
                   value={`${fmt(event.peak_rain_rate_mmh, 2)} mm/hr`}
@@ -750,16 +774,20 @@ function ChartModal({
                   </div>
                   <div className="mt-3 space-y-2 text-sm leading-6 text-zinc-700">
                     <div>
-                      Peak rain is a rate estimate in <span className="font-semibold">mm/hr</span>.
+                      Peak rain is a rate estimate in{" "}
+                      <span className="font-semibold">mm/hr</span>.
                     </div>
                     <div>
-                      Total rain is the accumulated event rainfall in <span className="font-semibold">mm</span>.
+                      Total rain is the accumulated event rainfall in{" "}
+                      <span className="font-semibold">mm</span>.
                     </div>
                     <div>
-                      Total tips shows how many bucket tips occurred during the event.
+                      Total tips shows how many bucket tips occurred during the
+                      event.
                     </div>
                     <div>
-                      Trigger and end reason help validate whether the lifecycle logic behaved correctly for this event.
+                      Trigger and end reason help validate whether the lifecycle
+                      logic behaved correctly for this event.
                     </div>
                   </div>
                 </div>
@@ -811,7 +839,24 @@ function ChartModal({
                 </button>
                 <button
                   type="button"
-                  onClick={() => window.open(`/api/admin/events/${event.id}/export`, "_blank")}
+                  onClick={() =>
+                    window.open(
+                      `/api/admin/events/${event.id}/report`,
+                      "_blank",
+                    )
+                  }
+                  className="inline-flex min-h-11 items-center justify-center rounded-xl bg-blue-700 px-4 py-2 text-sm font-bold text-white hover:bg-blue-800"
+                >
+                  Download PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    window.open(
+                      `/api/admin/events/${event.id}/export`,
+                      "_blank",
+                    )
+                  }
                   className="inline-flex min-h-11 items-center justify-center rounded-xl bg-zinc-900 px-4 py-2 text-sm font-bold text-white hover:bg-zinc-800"
                 >
                   Download CSV
@@ -852,19 +897,25 @@ export default function AdminEventsPage() {
   const [createAsOngoing, setCreateAsOngoing] = useState(false);
 
   const [filterSensorId, setFilterSensorId] = useState("all");
-  const [filterStatus, setFilterStatus] = useState<"all" | RainEventRecord["status"]>("all");
+  const [filterStatus, setFilterStatus] = useState<
+    "all" | RainEventRecord["status"]
+  >("all");
   const [searchText, setSearchText] = useState("");
   const [rowsPerPage, setRowsPerPage] = useState(20);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
-  const [expandedEventIds, setExpandedEventIds] = useState<Record<number, boolean>>({});
+  const [expandedEventIds, setExpandedEventIds] = useState<
+    Record<number, boolean>
+  >({});
 
   const [creating, setCreating] = useState(false);
   const [endingEventId, setEndingEventId] = useState<number | null>(null);
   const [deletingEventId, setDeletingEventId] = useState<number | null>(null);
-  const [regeneratingEventId, setRegeneratingEventId] = useState<number | null>(null);
+  const [regeneratingEventId, setRegeneratingEventId] = useState<number | null>(
+    null,
+  );
 
   const [chartEvent, setChartEvent] = useState<RainEventRecord | null>(null);
 
@@ -873,7 +924,7 @@ export default function AdminEventsPage() {
     if (!contentType.includes("application/json")) {
       const text = await res.text();
       throw new Error(
-        `Expected JSON but got ${contentType || "unknown content-type"}.\n${text.slice(0, 200)}`
+        `Expected JSON but got ${contentType || "unknown content-type"}.\n${text.slice(0, 200)}`,
       );
     }
     return (await res.json()) as JsonResponse;
@@ -892,7 +943,7 @@ export default function AdminEventsPage() {
 
       if (!eventsRes.ok || !eventsJson.ok) {
         throw new Error(
-          eventsJson.ok ? "Failed to load rain events." : eventsJson.error
+          eventsJson.ok ? "Failed to load rain events." : eventsJson.error,
         );
       }
 
@@ -904,7 +955,9 @@ export default function AdminEventsPage() {
         setSelectedSensorId(sensorRows[0].id);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load rain events.");
+      setError(
+        err instanceof Error ? err.message : "Failed to load rain events.",
+      );
     } finally {
       setLoading(false);
     }
@@ -959,8 +1012,12 @@ export default function AdminEventsPage() {
 
   const counts = useMemo(() => {
     const ongoing = filteredEvents.filter((e) => e.status === "ongoing").length;
-    const resolved = filteredEvents.filter((e) => e.status === "resolved").length;
-    const cancelled = filteredEvents.filter((e) => e.status === "cancelled").length;
+    const resolved = filteredEvents.filter(
+      (e) => e.status === "resolved",
+    ).length;
+    const cancelled = filteredEvents.filter(
+      (e) => e.status === "cancelled",
+    ).length;
 
     const totalTips = filteredEvents.reduce((sum, event) => {
       return sum + Number(event.total_tips ?? 0);
@@ -996,7 +1053,9 @@ export default function AdminEventsPage() {
       }
 
       if (!createAsOngoing && !endAt) {
-        throw new Error("Please provide an end date/time or mark it as ongoing.");
+        throw new Error(
+          "Please provide an end date/time or mark it as ongoing.",
+        );
       }
 
       const startedAtIso = new Date(startAt).toISOString();
@@ -1011,7 +1070,9 @@ export default function AdminEventsPage() {
           throw new Error("Invalid end date/time.");
         }
 
-        if (new Date(endedAtIso).getTime() <= new Date(startedAtIso).getTime()) {
+        if (
+          new Date(endedAtIso).getTime() <= new Date(startedAtIso).getTime()
+        ) {
           throw new Error("End date/time must be after the start date/time.");
         }
       }
@@ -1069,7 +1130,7 @@ export default function AdminEventsPage() {
 
   async function handleDeleteEvent(eventId: number) {
     const confirmed = window.confirm(
-      "Delete this rain event? This removes the event summary record only."
+      "Delete this rain event? This removes the event summary record only.",
     );
     if (!confirmed) return;
 
@@ -1112,10 +1173,16 @@ export default function AdminEventsPage() {
 
       await loadAll();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to regenerate event.");
+      setError(
+        err instanceof Error ? err.message : "Failed to regenerate event.",
+      );
     } finally {
       setRegeneratingEventId(null);
     }
+  }
+
+  function handleDownloadPdf(eventId: number) {
+    window.open(`/api/admin/events/${eventId}/report`, "_blank");
   }
 
   function handleDownloadCsv(eventId: number) {
@@ -1162,11 +1229,26 @@ export default function AdminEventsPage() {
         )}
 
         <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
-          <StatCard title="Visible Events" value={loading ? "…" : String(counts.total)} />
-          <StatCard title="Ongoing" value={loading ? "…" : String(counts.ongoing)} />
-          <StatCard title="Resolved" value={loading ? "…" : String(counts.resolved)} />
-          <StatCard title="Cancelled" value={loading ? "…" : String(counts.cancelled)} />
-          <StatCard title="Total Tips" value={loading ? "…" : fmtInt(counts.totalTips)} />
+          <StatCard
+            title="Visible Events"
+            value={loading ? "…" : String(counts.total)}
+          />
+          <StatCard
+            title="Ongoing"
+            value={loading ? "…" : String(counts.ongoing)}
+          />
+          <StatCard
+            title="Resolved"
+            value={loading ? "…" : String(counts.resolved)}
+          />
+          <StatCard
+            title="Cancelled"
+            value={loading ? "…" : String(counts.cancelled)}
+          />
+          <StatCard
+            title="Total Tips"
+            value={loading ? "…" : fmtInt(counts.totalTips)}
+          />
           <StatCard
             title="Aggregated Rain"
             value={loading ? "…" : `${fmt(counts.totalRainMm, 2)} mm`}
@@ -1181,9 +1263,12 @@ export default function AdminEventsPage() {
               className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left sm:px-5"
             >
               <div>
-                <div className="text-base font-extrabold text-zinc-900">Filters</div>
+                <div className="text-base font-extrabold text-zinc-900">
+                  Filters
+                </div>
                 <div className="mt-1 text-sm text-zinc-600">
-                  Narrow the table and cards by sensor, status, keyword, and rows.
+                  Narrow the table and cards by sensor, status, keyword, and
+                  rows.
                 </div>
               </div>
               <div className="text-sm font-bold text-zinc-500">
@@ -1374,9 +1459,12 @@ export default function AdminEventsPage() {
 
         <div className="mt-4 rounded-2xl border border-zinc-200 bg-white shadow-sm">
           <div className="border-b border-zinc-200 px-4 py-4 sm:px-5">
-            <div className="text-base font-extrabold text-zinc-900">Event Timeline</div>
+            <div className="text-base font-extrabold text-zinc-900">
+              Event Timeline
+            </div>
             <div className="mt-1 text-xs text-zinc-500">
-              All per-event summary values come directly from the rain_events table.
+              All per-event summary values come directly from the rain_events
+              table.
             </div>
           </div>
 
@@ -1397,7 +1485,8 @@ export default function AdminEventsPage() {
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="font-bold text-zinc-900">
-                            {sensorNameMap.get(event.device_id) ?? event.device_id}
+                            {sensorNameMap.get(event.device_id) ??
+                              event.device_id}
                           </div>
                           <div className="mt-1 text-xs text-zinc-500">
                             {event.device_id}
@@ -1406,7 +1495,7 @@ export default function AdminEventsPage() {
 
                         <span
                           className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold ${statusClasses(
-                            event.status
+                            event.status,
                           )}`}
                         >
                           {event.status.toUpperCase()}
@@ -1415,23 +1504,33 @@ export default function AdminEventsPage() {
 
                       <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
                         <div>
-                          <div className="text-xs font-semibold text-zinc-500">Started</div>
-                          <div className="mt-1 text-zinc-800">{fmtTime(event.started_at)}</div>
+                          <div className="text-xs font-semibold text-zinc-500">
+                            Started
+                          </div>
+                          <div className="mt-1 text-zinc-800">
+                            {fmtTime(event.started_at)}
+                          </div>
                         </div>
                         <div>
-                          <div className="text-xs font-semibold text-zinc-500">Duration</div>
+                          <div className="text-xs font-semibold text-zinc-500">
+                            Duration
+                          </div>
                           <div className="mt-1 font-semibold text-zinc-900">
                             {durationText(event.started_at, event.ended_at)}
                           </div>
                         </div>
                         <div>
-                          <div className="text-xs font-semibold text-zinc-500">Tips</div>
+                          <div className="text-xs font-semibold text-zinc-500">
+                            Tips
+                          </div>
                           <div className="mt-1 font-semibold text-zinc-900">
                             {fmtInt(event.total_tips)}
                           </div>
                         </div>
                         <div>
-                          <div className="text-xs font-semibold text-zinc-500">Total Rain</div>
+                          <div className="text-xs font-semibold text-zinc-500">
+                            Total Rain
+                          </div>
                           <div className="mt-1 font-semibold text-zinc-900">
                             {fmt(event.total_rain_mm, 2)} mm
                           </div>
@@ -1442,21 +1541,33 @@ export default function AdminEventsPage() {
                         <div className="mt-4 space-y-3 border-t border-zinc-100 pt-4">
                           <div className="grid grid-cols-2 gap-3 text-sm">
                             <div>
-                              <div className="text-xs font-semibold text-zinc-500">Ended</div>
-                              <div className="mt-1 text-zinc-800">{fmtTime(event.ended_at)}</div>
+                              <div className="text-xs font-semibold text-zinc-500">
+                                Ended
+                              </div>
+                              <div className="mt-1 text-zinc-800">
+                                {fmtTime(event.ended_at)}
+                              </div>
                             </div>
                             <div>
-                              <div className="text-xs font-semibold text-zinc-500">Last Tip</div>
-                              <div className="mt-1 text-zinc-800">{fmtTime(event.last_tip_at)}</div>
+                              <div className="text-xs font-semibold text-zinc-500">
+                                Last Tip
+                              </div>
+                              <div className="mt-1 text-zinc-800">
+                                {fmtTime(event.last_tip_at)}
+                              </div>
                             </div>
                             <div>
-                              <div className="text-xs font-semibold text-zinc-500">Peak Rain</div>
+                              <div className="text-xs font-semibold text-zinc-500">
+                                Peak Rain
+                              </div>
                               <div className="mt-1 font-semibold text-zinc-900">
                                 {fmt(event.peak_rain_rate_mmh, 2)} mm/hr
                               </div>
                             </div>
                             <div>
-                              <div className="text-xs font-semibold text-zinc-500">Peak Depth</div>
+                              <div className="text-xs font-semibold text-zinc-500">
+                                Peak Depth
+                              </div>
                               <div className="mt-1 font-semibold text-zinc-900">
                                 {fmt(event.peak_flood_depth_cm, 1)} cm
                               </div>
@@ -1464,14 +1575,18 @@ export default function AdminEventsPage() {
                           </div>
 
                           <div>
-                            <div className="text-xs font-semibold text-zinc-500">Trigger</div>
+                            <div className="text-xs font-semibold text-zinc-500">
+                              Trigger
+                            </div>
                             <div className="mt-1 text-sm leading-6 text-zinc-700">
                               {event.trigger_reason ?? "—"}
                             </div>
                           </div>
 
                           <div>
-                            <div className="text-xs font-semibold text-zinc-500">End Reason</div>
+                            <div className="text-xs font-semibold text-zinc-500">
+                              End Reason
+                            </div>
                             <div className="mt-1 text-sm leading-6 text-zinc-700">
                               {event.ended_reason ?? "—"}
                             </div>
@@ -1498,6 +1613,14 @@ export default function AdminEventsPage() {
 
                         <button
                           type="button"
+                          onClick={() => handleDownloadPdf(event.id)}
+                          className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
+                        >
+                          PDF
+                        </button>
+
+                        <button
+                          type="button"
                           onClick={() => handleDownloadCsv(event.id)}
                           className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
                         >
@@ -1510,7 +1633,9 @@ export default function AdminEventsPage() {
                           disabled={regeneratingEventId === event.id}
                           className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-800 shadow-sm hover:bg-amber-100 disabled:opacity-60"
                         >
-                          {regeneratingEventId === event.id ? "Regenerating..." : "Regenerate"}
+                          {regeneratingEventId === event.id
+                            ? "Regenerating..."
+                            : "Regenerate"}
                         </button>
 
                         {event.status === "ongoing" && (
@@ -1530,7 +1655,9 @@ export default function AdminEventsPage() {
                           disabled={deletingEventId === event.id}
                           className="rounded-lg border border-zinc-300 bg-zinc-100 px-3 py-1.5 text-xs font-bold text-zinc-800 shadow-sm hover:bg-zinc-200 disabled:opacity-60"
                         >
-                          {deletingEventId === event.id ? "Deleting..." : "Delete"}
+                          {deletingEventId === event.id
+                            ? "Deleting..."
+                            : "Delete"}
                         </button>
                       </div>
                     </div>
@@ -1573,15 +1700,18 @@ export default function AdminEventsPage() {
                           <tr className="border-t border-zinc-100">
                             <td className="px-4 py-3 align-top">
                               <div className="font-bold text-zinc-900">
-                                {sensorNameMap.get(event.device_id) ?? event.device_id}
+                                {sensorNameMap.get(event.device_id) ??
+                                  event.device_id}
                               </div>
-                              <div className="text-xs text-zinc-500">{event.device_id}</div>
+                              <div className="text-xs text-zinc-500">
+                                {event.device_id}
+                              </div>
                             </td>
 
                             <td className="px-4 py-3 align-top">
                               <span
                                 className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${statusClasses(
-                                  event.status
+                                  event.status,
                                 )}`}
                               >
                                 {event.status.toUpperCase()}
@@ -1632,6 +1762,14 @@ export default function AdminEventsPage() {
 
                                 <button
                                   type="button"
+                                  onClick={() => handleDownloadPdf(event.id)}
+                                  className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
+                                >
+                                  PDF
+                                </button>
+
+                                <button
+                                  type="button"
                                   onClick={() => handleDownloadCsv(event.id)}
                                   className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-bold text-zinc-800 shadow-sm hover:bg-zinc-50"
                                 >
@@ -1640,31 +1778,43 @@ export default function AdminEventsPage() {
 
                                 <button
                                   type="button"
-                                  onClick={() => void handleRegenerateEvent(event.id)}
+                                  onClick={() =>
+                                    void handleRegenerateEvent(event.id)
+                                  }
                                   disabled={regeneratingEventId === event.id}
                                   className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-800 shadow-sm hover:bg-amber-100 disabled:opacity-60"
                                 >
-                                  {regeneratingEventId === event.id ? "Regenerating..." : "Regenerate"}
+                                  {regeneratingEventId === event.id
+                                    ? "Regenerating..."
+                                    : "Regenerate"}
                                 </button>
 
                                 {event.status === "ongoing" && (
                                   <button
                                     type="button"
-                                    onClick={() => void handleEndEvent(event.id)}
+                                    onClick={() =>
+                                      void handleEndEvent(event.id)
+                                    }
                                     disabled={endingEventId === event.id}
                                     className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 shadow-sm hover:bg-red-100 disabled:opacity-60"
                                   >
-                                    {endingEventId === event.id ? "Ending..." : "End"}
+                                    {endingEventId === event.id
+                                      ? "Ending..."
+                                      : "End"}
                                   </button>
                                 )}
 
                                 <button
                                   type="button"
-                                  onClick={() => void handleDeleteEvent(event.id)}
+                                  onClick={() =>
+                                    void handleDeleteEvent(event.id)
+                                  }
                                   disabled={deletingEventId === event.id}
                                   className="rounded-lg border border-zinc-300 bg-zinc-100 px-3 py-1.5 text-xs font-bold text-zinc-800 shadow-sm hover:bg-zinc-200 disabled:opacity-60"
                                 >
-                                  {deletingEventId === event.id ? "Deleting..." : "Delete"}
+                                  {deletingEventId === event.id
+                                    ? "Deleting..."
+                                    : "Delete"}
                                 </button>
                               </div>
                             </td>
@@ -1730,7 +1880,7 @@ export default function AdminEventsPage() {
         event={chartEvent}
         sensorName={
           chartEvent
-            ? sensorNameMap.get(chartEvent.device_id) ?? chartEvent.device_id
+            ? (sensorNameMap.get(chartEvent.device_id) ?? chartEvent.device_id)
             : null
         }
         onClose={() => setChartEvent(null)}

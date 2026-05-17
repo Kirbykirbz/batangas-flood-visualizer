@@ -1,8 +1,11 @@
+//app/dashboard/admin/sensors/[id]/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import SensorForm, { type SensorFormValues } from "@/components/admin/SensorForm";
+import SensorForm, {
+  type SensorFormValues,
+} from "@/components/admin/SensorForm";
 import { getSensorById, updateSensor } from "@/app/lib/sensorsRepo";
 
 export default function EditSensorPage() {
@@ -11,7 +14,8 @@ export default function EditSensorPage() {
 
   const id = params.id as string;
 
-  const [initialValues, setInitialValues] = useState<SensorFormValues | null>(null);
+  const [initialValues, setInitialValues] =
+    useState<SensorFormValues | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -21,6 +25,7 @@ export default function EditSensorPage() {
       setInitialValues({
         id: sensor.id,
         name: sensor.name,
+        location_label: sensor.location_label ?? "",
         lat: String(sensor.lat),
         lng: String(sensor.lng),
         zone_label: sensor.zone_label ?? "",
@@ -32,15 +37,16 @@ export default function EditSensorPage() {
       });
     }
 
-    load();
+    void load();
   }, [id]);
 
   async function handleSubmit(values: SensorFormValues) {
     await updateSensor(id, {
       name: values.name.trim(),
+      location_label: values.location_label.trim() || null,
       lat: Number(values.lat),
       lng: Number(values.lng),
-      zone_label: values.zone_label || null,
+      zone_label: values.zone_label.trim() || null,
       dry_distance_cm: values.dry_distance_cm
         ? Number(values.dry_distance_cm)
         : null,
@@ -52,7 +58,7 @@ export default function EditSensorPage() {
   }
 
   if (!initialValues) {
-    return <div className="p-6">Loading...</div>;
+    return <div className="p-6 text-gray-900">Loading...</div>;
   }
 
   return (

@@ -2,7 +2,6 @@
 import Link from "next/link";
 import { listSensors } from "@/app/lib/sensorsRepo";
 
-
 export default async function AdminSensorsPage() {
   const sensors = await listSensors();
 
@@ -24,6 +23,7 @@ export default async function AdminSensorsPage() {
             <tr>
               <th className="px-4 py-3">ID</th>
               <th className="px-4 py-3">Name</th>
+              <th className="px-4 py-3">Location / Address</th>
               <th className="px-4 py-3">Latitude</th>
               <th className="px-4 py-3">Longitude</th>
               <th className="px-4 py-3">Zone</th>
@@ -31,15 +31,19 @@ export default async function AdminSensorsPage() {
               <th className="px-4 py-3"></th>
             </tr>
           </thead>
+
           <tbody>
             {sensors.map((sensor) => (
               <tr key={sensor.id} className="border-t border-zinc-100">
                 <td className="px-4 py-3">{sensor.id}</td>
                 <td className="px-4 py-3">{sensor.name}</td>
+                <td className="px-4 py-3">{sensor.location_label ?? "—"}</td>
                 <td className="px-4 py-3">{sensor.lat}</td>
                 <td className="px-4 py-3">{sensor.lng}</td>
                 <td className="px-4 py-3">{sensor.zone_label ?? "—"}</td>
-                <td className="px-4 py-3">{sensor.is_active ? "Yes" : "No"}</td>
+                <td className="px-4 py-3">
+                  {sensor.is_active ? "Yes" : "No"}
+                </td>
                 <td className="px-4 py-3">
                   <Link
                     href={`/dashboard/admin/sensors/${sensor.id}`}
@@ -50,6 +54,14 @@ export default async function AdminSensorsPage() {
                 </td>
               </tr>
             ))}
+
+            {sensors.length === 0 && (
+              <tr>
+                <td colSpan={8} className="px-4 py-6 text-zinc-500">
+                  No sensors found.
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

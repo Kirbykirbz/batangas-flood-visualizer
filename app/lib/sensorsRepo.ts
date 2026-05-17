@@ -4,8 +4,10 @@ import { supabase } from "@/lib/supabaseClient";
 export type SensorRecord = {
   id: string;
   name: string;
+  location_label: string | null; // ✅ ADD
   lat: number;
   lng: number;
+  
   zone_label: string | null;
   dry_distance_cm: number | null;
   is_active: boolean;

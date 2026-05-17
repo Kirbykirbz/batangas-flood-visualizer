@@ -1,4 +1,5 @@
 // components/admin/SensorForm.tsx
+
 "use client";
 
 import { useState } from "react";
@@ -6,6 +7,7 @@ import { useState } from "react";
 export type SensorFormValues = {
   id: string;
   name: string;
+  location_label: string;
   lat: string;
   lng: string;
   zone_label: string;
@@ -26,7 +28,7 @@ export default function SensorForm({
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setIsSaving(true);
     setError(null);
@@ -41,13 +43,17 @@ export default function SensorForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4 rounded-xl border border-zinc-200 bg-white p-6">
+    <form
+      onSubmit={handleSubmit}
+      className="space-y-4 rounded-xl border border-zinc-200 bg-white p-6"
+    >
       <div>
         <label className="mb-1 block text-sm font-medium">Sensor ID</label>
         <input
           className="w-full rounded-lg border border-zinc-300 px-3 py-2"
           value={values.id}
           onChange={(e) => setValues({ ...values, id: e.target.value })}
+          disabled={isSaving}
         />
       </div>
 
@@ -57,6 +63,22 @@ export default function SensorForm({
           className="w-full rounded-lg border border-zinc-300 px-3 py-2"
           value={values.name}
           onChange={(e) => setValues({ ...values, name: e.target.value })}
+          disabled={isSaving}
+        />
+      </div>
+
+      <div>
+        <label className="mb-1 block text-sm font-medium">
+          Location / Address
+        </label>
+        <input
+          className="w-full rounded-lg border border-zinc-300 px-3 py-2"
+          value={values.location_label}
+          onChange={(e) =>
+            setValues({ ...values, location_label: e.target.value })
+          }
+          placeholder="e.g. Barangay Libjo"
+          disabled={isSaving}
         />
       </div>
 
@@ -67,6 +89,7 @@ export default function SensorForm({
             className="w-full rounded-lg border border-zinc-300 px-3 py-2"
             value={values.lat}
             onChange={(e) => setValues({ ...values, lat: e.target.value })}
+            disabled={isSaving}
           />
         </div>
 
@@ -76,6 +99,7 @@ export default function SensorForm({
             className="w-full rounded-lg border border-zinc-300 px-3 py-2"
             value={values.lng}
             onChange={(e) => setValues({ ...values, lng: e.target.value })}
+            disabled={isSaving}
           />
         </div>
       </div>
@@ -85,16 +109,25 @@ export default function SensorForm({
         <input
           className="w-full rounded-lg border border-zinc-300 px-3 py-2"
           value={values.zone_label}
-          onChange={(e) => setValues({ ...values, zone_label: e.target.value })}
+          onChange={(e) =>
+            setValues({ ...values, zone_label: e.target.value })
+          }
+          placeholder="e.g. Flood Zone A"
+          disabled={isSaving}
         />
       </div>
 
       <div>
-        <label className="mb-1 block text-sm font-medium">Dry Distance (cm)</label>
+        <label className="mb-1 block text-sm font-medium">
+          Dry Distance (cm)
+        </label>
         <input
           className="w-full rounded-lg border border-zinc-300 px-3 py-2"
           value={values.dry_distance_cm}
-          onChange={(e) => setValues({ ...values, dry_distance_cm: e.target.value })}
+          onChange={(e) =>
+            setValues({ ...values, dry_distance_cm: e.target.value })
+          }
+          disabled={isSaving}
         />
       </div>
 
@@ -102,7 +135,10 @@ export default function SensorForm({
         <input
           type="checkbox"
           checked={values.is_active}
-          onChange={(e) => setValues({ ...values, is_active: e.target.checked })}
+          onChange={(e) =>
+            setValues({ ...values, is_active: e.target.checked })
+          }
+          disabled={isSaving}
         />
         Active
       </label>
