@@ -5,6 +5,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { type RainEventRecord } from "@/app/lib/eventsRepo";
 import { listSensors, type SensorRecord } from "@/app/lib/sensorsRepo";
+import { SensorCsvExportCard } from "@/components/admin/SensorCsvExportCard";
 
 function fmt(n: number | null, digits = 1) {
   if (n == null || !Number.isFinite(n)) return "—";
@@ -1456,6 +1457,10 @@ export default function AdminEventsPage() {
             )}
           </div>
         </div>
+
+        <SensorCsvExportCard
+  sensors={sensors}
+/>
 
         <div className="mt-4 rounded-2xl border border-zinc-200 bg-white shadow-sm">
           <div className="border-b border-zinc-200 px-4 py-4 sm:px-5">
